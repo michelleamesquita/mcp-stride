@@ -4,7 +4,7 @@ Servidor **MCP local** em Python para o **Cursor** que:
 - Analisa um repositório local (Python, JS/TS, Java, Go e **NestJS**);
 - Extrai rotas/handlers e tenta inferir o estilo arquitetural (Hexagonal, Layered/Clean, Microserviços x Monólito);
 - Identifica sinais de segurança (CORS, CSRF, HSTS, JWT, debug, segredos, uploads, chamadas externas);
-- Gera **diagramas Mermaid** (flowchart + sequence) em **Markdown** (sem imagens/base64 e sem dependências extras).
+- Gera **diagramas Mermaid** (flowchart + sequence) em **Markdown**.
 
 ## Requisitos
 
@@ -36,5 +36,5 @@ pip install -r requirements.txt
 ## Como usar (Exemplos de prompt)
 
   Use a ferramenta stride-arch-sketcher.full_report com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
-  Use a ferramenta stride-arch-sketcher.mermaid_diagrams com {"path": ".", "max_files": 100}
-  Use a ferramenta stride-arch-sketcher.full_report com {"path": ".", "max_files": 100}
+  Use a ferramenta stride-arch-sketcher.mermaid_diagrams com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
+  Use a ferramenta stride-arch-sketcher.full_report com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
