@@ -599,9 +599,9 @@ def _generate_diagrams_md(endpoints: List[Endpoint], arch: ArchGuess) -> str:
     seq  = mermaid_sequence(endpoints)
     md = [
         "## Diagramas",
-        "### Fluxo (graph TD)",
+        "### Fluxo (flowchart TD)",
         flow,
-        "### Sequência (sequenceDiagram)",
+        "### Sequência",
         seq
     ]
     return "\n".join(md)
@@ -709,18 +709,8 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     md_parts.append("## Resumo Arquitetural")
     md_parts.extend([f"- {b}" for b in bullets_arch] or ["- (sem sinais fortes)"])
 
-    # === SEGURANÇA (Controles + Evidências + Vulnerabilidades) ===
-    md_parts.append("\n## Segurança — Controles, Evidências e Vulnerabilidades")
-
-    md_parts.append("\n### 🔒 Controles de segurança)")
-    # Controles/Sinais (com refs arquivo:linha)
-    if bullets_sec:
-        md_parts.extend([f"- {b}" for b in bullets_sec])
-    else:
-        md_parts.append("- (não encontramos controles claros)")
-
-    # Pontos de interesse e vulnerabilidades (arquivo:linha, tipo)
-    md_parts.append("\n### 🔍 Pontos de interesse e vulnerabilidades")
+    # === SEGURANÇA (Controles + Vulnerabilidades) ===
+    md_parts.append("\n## Segurança")
     
     # Indexar evidências por tipo
     by_key = _index_evidence(evidence)
@@ -733,7 +723,25 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         "jwt_usage": "JWT (informativo)",
         "upload": "Upload/Multi-part"
     }
-    
+
+    # Primeiro os controles
+    md_parts.append("\n### 🔒 Controles de Segurança Detectados")
+    control_keys = list(controls.keys())
+    has_controls = any(by_key.get(k) for k in control_keys)
+    if has_controls:
+        md_parts.append("| Tipo | Arquivo:linha | Trecho |")
+        md_parts.append("|------|---------------|--------|")
+        for k in control_keys:
+            for ev in by_key.get(k, []):
+                snippet = (ev.text or "").replace("|", "\\|")
+                # Criar link clicável para o arquivo:linha
+                file_path = str(Path(ev.file).resolve()).replace("\\", "/")  # Garantir formato correto de path
+                file_name = Path(ev.file).name
+                md_parts.append(f"| {controls.get(k, k)} | [{file_name}:{ev.line}]({file_path}#{ev.line}) | {snippet} |")
+    else:
+        md_parts.append("- (nenhum controle de segurança detectado)")
+
+    # Depois as vulnerabilidades
     vulns = {
         "cors_overly_permissive": "⚠️ CORS permissivo",
         "debug_exposed": "⚠️ Debug exposto",
@@ -764,29 +772,22 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         "raw_render": "⚠️ Renderização direta de input"
     }
     
-    # Primeiro os controles
-    control_keys = list(controls.keys())
-    has_controls = any(by_key.get(k) for k in control_keys)
-    if has_controls:
-        md_parts.append("\n#### 🔒 Controles detectados")
-        md_parts.append("| Tipo | Arquivo:linha | Trecho |")
-        md_parts.append("|------|---------------|--------|")
-        for k in control_keys:
-            for ev in by_key.get(k, []):
-                snippet = (ev.text or "").replace("|", "\\|")
-                md_parts.append(f"| {controls.get(k, k)} | `{ev.file}:{ev.line}` | {snippet} |")
-    
-    # Depois as vulnerabilidades
+    # Vulnerabilidades
+    md_parts.append("\n### 🛑 Vulnerabilidades Detectadas")
     vuln_keys = list(vulns.keys())
     has_vulns = any(by_key.get(k) for k in vuln_keys)
     if has_vulns:
-        md_parts.append("\n#### 🛑 Vulnerabilidades detectadas")
         md_parts.append("| Tipo | Arquivo:linha | Trecho |")
         md_parts.append("|------|---------------|--------|")
         for k in vuln_keys:
             for ev in by_key.get(k, []):
                 snippet = (ev.text or "").replace("|", "\\|")
-                md_parts.append(f"| {vulns.get(k, k)} | `{ev.file}:{ev.line}` | {snippet} |")
+                # Criar link clicável para o arquivo:linha
+                file_path = str(Path(ev.file).resolve()).replace("\\", "/")  # Garantir formato correto de path
+                file_name = Path(ev.file).name
+                md_parts.append(f"| {vulns.get(k, k)} | [{file_name}:{ev.line}]({file_path}#{ev.line}) | {snippet} |")
+    else:
+        md_parts.append("- (nenhuma vulnerabilidade detectada)")
 
     if not has_controls and not has_vulns:
         md_parts.append("- (nenhum ponto de interesse ou vulnerabilidade detectada)")
