@@ -497,7 +497,7 @@ def load_repo_texts(path: str, max_files:int=15000, max_size_kb:int=8192) -> Tup
 async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
     """
     Analisa um repositório local e retorna:
-    - Um RESUMO em Markdown (arquitetura, segurança com refs de arquivo:linha, STRIDE detalhado);
+    - Um RESUMO em Markdown (arquitetura, segurança com refs de arquivo:linha, TODOS os endpoints, STRIDE detalhado);
     - Em seguida, o JSON completo (formatado) com os mesmos dados.
     """
     root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
@@ -573,29 +573,9 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         extra = " Tipos: " + ", ".join(security.external_calls) if security.external_calls else ""
         bullets_sec.append("Chamadas externas detectadas." + _fmt_refs(ev_map["Chamadas externas detectadas."]) + extra)
 
-    # STRIDE – contagem + refs
-    stride_sections = []
-    for k, title in [("S","Spoofing"),("T","Tampering"),("R","Repudiation"),
-                     ("I","Information Disclosure"),("D","Denial of Service"),("E","Elevation of Privilege")]:
-        items = stride.get(k) or []
-        if not items:
-            stride_sections.append(f"### {title}\n- (sem achados)")
-        else:
-            stride_sections.append(f"### {title}")
-            stride_sections.extend([f"- {msg}" for msg in items])
-            # refs por tipo
-            if ev_index.get(k.lower()):
-                stride_sections.append("  " + _fmt_refs(ev_index[k.lower()]))
-
-    # Endpoints (amostra)
-    eps_lines = []
-    for e in endpoints[:20]:
-        fw = f" ({e.framework})" if e.framework else ""
-        lang = f" | lang: {e.language}" if e.language else ""
-        h  = f" | handler: `{e.handler}`" if e.handler else ""
-        eps_lines.append(f"- **{e.method} {e.path}**{fw}{lang} — `{e.file}`{h}")
-    if not eps_lines:
-        eps_lines.append("- (nenhum endpoint detectado)")
+    # STRIDE – contagem
+    s_counts = {k: len(v or []) for k, v in (stride or {}).items()}
+    stride_line = " | ".join([f"{k}:{s_counts.get(k,0)}" for k in ["S","T","R","I","D","E"]])
 
     # ---------- Markdown final ----------
     md_parts = []
@@ -611,13 +591,26 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     else:
         md_parts.append("- (não encontramos controles claros)")
 
-    md_parts.append("\n## Endpoints (amostra)")
-    md_parts.extend(eps_lines)
+    # Endpoints — agora TODOS (sem amostra)
+    md_parts.append("\n## Endpoints (todos)")
+    if endpoints:
+        md_parts.append("| Método | Path | Framework | Handler | Linguagem | Arquivo |")
+        md_parts.append("|--------|------|-----------|---------|-----------|---------|")
+        for e in endpoints:
+            fw = e.framework or ""
+            handler = f"`{e.handler}`" if e.handler else ""
+            lang = e.language or ""
+            md_parts.append(f"| {e.method} | {e.path} | {fw} | {handler} | {lang} | `{e.file}` |")
+    else:
+        md_parts.append("- (nenhum endpoint detectado)")
 
-    md_parts.append("\n## STRIDE – achados por categoria")
-    md_parts.extend(stride_sections)
+    # STRIDE — contagem e observação
+    md_parts.append("\n## STRIDE – contagem de achados")
+    md_parts.append(f"- {stride_line if stride_line else '(sem achados)'}")
 
-    return "\n".join(md_parts) + "\n\n---\n\n```json\n" + json_str + "\n```"
+    md_summary = "\n".join(md_parts)
+    return md_summary + "\n\n---\n\n```json\n" + json_str + "\n```"
+
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
