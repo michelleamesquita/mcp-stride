@@ -35,6 +35,6 @@ pip install -r requirements.txt
 
 ## Como usar (Exemplos de prompt)
 
-  Use a ferramenta stride-arch-sketcher.full_report com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
-  Use a ferramenta stride-arch-sketcher.mermaid_diagrams com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
-  Use a ferramenta stride-arch-sketcher.full_report com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
+  - Use a ferramenta stride-arch-sketcher.full_report com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
+  - Use a ferramenta stride-arch-sketcher.mermaid_diagrams com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
+  - Use a ferramenta stride-arch-sketcher.full_report com {"path": "/Users/mac/Projects/minha-api", "max_files": 100}
