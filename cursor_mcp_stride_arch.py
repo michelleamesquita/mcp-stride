@@ -4,6 +4,7 @@
 # de segurança e gera diagramas Mermaid (Markdown).
 #
 # Requisitos: Python 3.10+, pip install -r requirements.txt
+# (dep única de runtime: mcp.server.fastmcp)
 
 from __future__ import annotations
 import re, json, ast, logging
@@ -75,8 +76,6 @@ class RepoAnalysis:
 
 FILE_SKIP_PAT = re.compile(r"\.(min|lock|svg|png|jpg|jpeg|gif|pdf|ico|wasm|class|jar|zip|tar|gz|7z)$", re.I)
 
-
-
 def iter_code_files(root: Path, max_files:int=15000, max_size_kb:int=8192) -> Iterable[Path]:
     """
     Itera por arquivos de código, ignorando binários grandes.
@@ -108,6 +107,10 @@ def iter_code_files(root: Path, max_files:int=15000, max_size_kb:int=8192) -> It
             count += 1
             if count >= max_files:
                 return
+
+def m_escape(s: str) -> str:
+    """Escapa rótulos para Mermaid (em nós com aspas)."""
+    return (s or "").replace('"', '\\"').replace("`", "\\`").replace("<", "&lt;").replace(">", "&gt;").replace("\n", " ")
 
 # ----------------------------- Detectores de rotas ---------------------------------
 # Python
@@ -213,7 +216,7 @@ def extract_endpoints_for_file(p: Path, text: str) -> List[Endpoint]:
 
 # -------------------------- Heurísticas de arquitetura -----------------------------
 
-HEXAGONAL_HINTS = {"domain", "usecase", "use_case", "ports", "port", "adapters", "adapter"}
+HEXAGONAL_HINTS = {"domain", "usecase", "use_case", "ports", "port", "adapters", "adapter", }
 LAYERED_HINTS = {"controllers", "controller", "services", "service", "repositories", "repository"}
 DB_HINTS = {"postgres", "mysql", "mariadb", "sqlite", "redis", "mongodb", "dynamodb"}
 BROKER_HINTS = {"kafka", "rabbitmq", "sqs", "sns"}
@@ -392,6 +395,78 @@ def extract_security_and_stride(texts: Dict[Path,str]) -> Tuple[SecuritySignals,
     stride = {"S":S, "T":T, "R":R, "I":I, "D":D, "E":E}
     return security, stride, evidence
 
+# -------------------------------- Mermaid (Markdown) -------------------------------
+
+def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
+    """
+    Usa 'graph TD' (compatível), sem 'note over'. Cria nó 'N0' e liga ao GW
+    com linha pontilhada. Evita problemas com acentos no subgraph.
+    """
+    lines = []
+    lines.append("```mermaid")
+    lines.append("graph TD")
+    lines.append("classDef note fill:#fff,stroke:#999,color:#333;")
+    lines.append('    U["Usuario/Cliente"] -->|HTTP| GW["Router/API Gateway"]')
+    lines.append('    DB[(Repositorio/DB)]')
+    lines.append('    subgraph App["Aplicacao / Servicos"]')
+    if endpoints:
+        for i, e in enumerate(endpoints[:60], start=1):
+            endpoint_text = f"{e.method} {m_escape(e.path)}"
+            details = []
+            if e.framework: details.append(f"({e.framework})")
+            if e.handler:   details.append(f"handler: {m_escape(e.handler)}")
+            if e.language:  details.append(f"lang: {m_escape(e.language)}")
+            det = "<br/>" + "<br/>".join(details) if details else ""
+            lines.append(f'        GW --> E{i}["{endpoint_text}"]')
+            lines.append(f'        E{i} --> H{i}["Handler{det}"]')
+            lines.append(f'        H{i} --> S{i}["Servico"]')
+            lines.append(f'        S{i} --> DB')
+    else:
+        lines.append('        GW --> E0["Sem rotas detectadas"]')
+    lines.append("    end")
+
+    notes = []
+    if arch.is_microservices: notes.append("Microservicos")
+    if arch.is_hexagonal: notes.append("Hexagonal (Ports/Adapters)")
+    if arch.is_clean_layered: notes.append("Layered/Clean")
+    if arch.infra_signals: notes.append("Infra: " + ", ".join(arch.infra_signals))
+    if arch.data_stores: notes.append("Dados: " + ", ".join(arch.data_stores))
+    if arch.message_brokers: notes.append("Mensageria: " + ", ".join(arch.message_brokers))
+    if notes:
+        note_text = "<br/>".join(notes).replace('"', '\\"')
+        lines.append(f'    N0["{note_text}"]:::note')
+        lines.append("    GW -.-> N0")
+    lines.append("```")
+    return "\n".join(lines)
+
+def mermaid_sequence(endpoints: List[Endpoint]) -> str:
+    """
+    sequenceDiagram simplificado e compatível.
+    """
+    lines = []
+    lines.append("```mermaid")
+    lines.append("sequenceDiagram")
+    lines.append("    participant C as Cliente")
+    lines.append("    participant R as Router")
+    lines.append("    participant H as Handler")
+    lines.append("    participant S as Servico")
+    lines.append("    participant D as Repositorio/DB")
+    if endpoints:
+        for e in endpoints[:12]:
+            req_text = f"{e.method} {m_escape(e.path)}"
+            lines.append(f"    C->>+R: {req_text}")
+            lines.append("    R->>+H: delega")
+            lines.append("    H->>+S: regra de negocio")
+            lines.append("    S->>+D: consulta/grava")
+            lines.append("    D-->>-S: resultado")
+            lines.append("    S-->>-H: resposta")
+            lines.append("    H-->>-R: processa")
+            lines.append("    R-->>-C: HTTP 200/4xx/5xx")
+    else:
+        lines.append("    C->>+R: (sem rotas detectadas)")
+        lines.append("    R-->>-C: 204 No Content")
+    lines.append("```")
+    return "\n".join(lines)
 
 # --------------------------------- MCP TOOLS ---------------------------------------
 
@@ -413,7 +488,6 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     - Um RESUMO em Markdown (arquitetura, segurança, amostra de endpoints, STRIDE);
     - Em seguida, o JSON completo (formatado) com os mesmos dados.
     """
-    # --- lógica original ---
     root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
     endpoints: List[Endpoint] = []
     for p in files:
@@ -442,7 +516,6 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         security_evidence=evidence
     )
 
-    # --- JSON pronto ---
     out = asdict(analysis)
     out["endpoints"] = [asdict(e) for e in endpoints]
     out["arch"] = asdict(arch)
@@ -450,7 +523,7 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     out["security_evidence"] = [asdict(ev) for ev in evidence]
     json_str = json.dumps(out, indent=2, ensure_ascii=False)
 
-    # --- RESUMO em Markdown (curto e útil) ---
+    # RESUMO curto e útil
     bullets_arch = []
     if arch.is_microservices: bullets_arch.append("Arquitetura de **microserviços** detectada.")
     if arch.is_hexagonal: bullets_arch.append("Sinais de **Arquitetura Hexagonal (Ports & Adapters)**.")
@@ -471,11 +544,9 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     if security.external_calls: bullets_sec.append("Chamadas externas: " + ", ".join(security.external_calls))
     if security.secrets_in_code: bullets_sec.append("⚠️ Possíveis segredos em código (amostras): " + "; ".join(security.secrets_in_code))
 
-    # STRIDE contagens
     s_counts = {k: len(v or []) for k, v in (stride or {}).items()}
     stride_line = " | ".join([f"{k}:{s_counts.get(k,0)}" for k in ["S","T","R","I","D","E"]])
 
-    # endpoints amostra
     eps_lines = []
     for e in endpoints[:20]:
         fw = f" ({e.framework})" if e.framework else ""
@@ -499,7 +570,6 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     md_parts.append(f"- {stride_line if stride_line else '(sem achados)'}")
     md_summary = "\n".join(md_parts)
 
-    # --- Retorno combinado (Resumo + JSON) ---
     return md_summary + "\n\n---\n\n```json\n" + json_str + "\n```"
 
 @mcp.tool()
@@ -513,87 +583,9 @@ async def mermaid_diagrams(path: str = ".", max_files:int=15000, max_size_kb:int
             endpoints.extend(extract_endpoints_for_file(p, t))
     arch = guess_arch(root, files, texts)
 
-    # --- flow diagram ---
-    flow_lines = []
-    flow_lines.append("```mermaid")
-    flow_lines.append("flowchart TD")
-    flow_lines.append("    classDef note fill:#fff,stroke:#999,color:#333")
-    flow_lines.append('    U["Usuario"] -->|HTTP| GW["Router/API Gateway"]')
-    flow_lines.append('    DB[(Repositorio/DB)]')
-    flow_lines.append('    subgraph App["Aplicacao/Servicos"]')
-    if endpoints:
-        for i, e in enumerate(endpoints[:60], start=1):
-            # Escapa caracteres especiais no path
-            safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace("*", "\\*").replace("/", "\\/").replace('"', '\\"')
-            # Escapa caracteres especiais no handler
-            safe_handler = e.handler.replace('"', '\\"').replace("*", "\\*").replace("/", "\\/") if e.handler else ""
-            
-            # Monta o texto do endpoint
-            endpoint_text = f"{e.method} {safe_path}"
-            
-            # Monta o texto do handler com quebras de linha HTML
-            handler_parts = []
-            if e.framework:
-                handler_parts.append(f"({e.framework})")
-            if safe_handler:
-                handler_parts.append(f"handler: {safe_handler}")
-            if e.language:
-                handler_parts.append(f"lang: {e.language}")
-            handler_text = "<br/>" + "<br/>".join(handler_parts) if handler_parts else ""
-            
-            # Gera os nós com a sintaxe correta
-            flow_lines.append(f'        GW --> E{i}["{endpoint_text}"]')
-            flow_lines.append(f'        E{i} --> H{i}["Handler{handler_text}"]')
-            flow_lines.append(f'        H{i} --> S{i}["Servico"]')
-            flow_lines.append(f'        S{i} --> DB')
-    else:
-        flow_lines.append('        GW --> E0["Sem rotas detectadas"]')
-    flow_lines.append("    end")
+    flow = mermaid_flow(endpoints, arch)
+    seq  = mermaid_sequence(endpoints)
 
-    notes = []
-    if arch.is_microservices: notes.append("Microservicos")
-    if arch.is_hexagonal: notes.append("Hexagonal (Ports/Adapters)")
-    if arch.is_clean_layered: notes.append("Layered/Clean")
-    if arch.infra_signals: notes.append("Infra: " + ", ".join(arch.infra_signals))
-    if arch.data_stores: notes.append("Dados: " + ", ".join(arch.data_stores))
-    if arch.message_brokers: notes.append("Mensageria: " + ", ".join(arch.message_brokers))
-    if notes:
-        note_text = "<br/>".join(notes).replace('"', '\\"')
-        flow_lines.append(f'    N0["{note_text}"]:::note')
-        flow_lines.append("    GW -.-> N0")
-    flow_lines.append("```")
-    flow = "\n".join(flow_lines)
-
-    # --- sequence diagram ---
-    seq_lines = []
-    seq_lines.append("```mermaid")
-    seq_lines.append("sequenceDiagram")
-    seq_lines.append("    participant C as Cliente")
-    seq_lines.append("    participant R as Router")
-    seq_lines.append("    participant H as Handler")
-    seq_lines.append("    participant S as Servico")
-    seq_lines.append("    participant D as Repositorio/DB")
-    if endpoints:
-        for e in endpoints[:12]:
-            # Escapa caracteres especiais no path
-            safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace('"', '\\"')
-            # Monta o texto da requisição
-            req_text = f"{e.method} {safe_path}"
-            seq_lines.append(f"    C->>+R: {req_text}")
-            seq_lines.append("    R->>+H: delega")
-            seq_lines.append("    H->>+S: regra de negocio")
-            seq_lines.append("    S->>+D: consulta/grava")
-            seq_lines.append("    D-->>-S: resultado")
-            seq_lines.append("    S-->>-H: resposta")
-            seq_lines.append("    H-->>-R: processa")
-            seq_lines.append("    R-->>-C: HTTP 200/4xx/5xx")
-    else:
-        seq_lines.append("    C->>+R: (sem rotas detectadas)")
-        seq_lines.append("    R-->>-C: 204 No Content")
-    seq_lines.append("```")
-    seq = "\n".join(seq_lines)
-
-    # --- markdown final ---
     md = [
         "# Diagramas da arquitetura\n",
         "## Fluxo (graph TD)\n",
@@ -606,7 +598,6 @@ async def mermaid_diagrams(path: str = ".", max_files:int=15000, max_size_kb:int
 @mcp.tool()
 async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
     """Relatório completo (Markdown) com resumo arquitetural, segurança, STRIDE, diagramas Mermaid e evidências (arquivo/linha)."""
-    # reaproveita a lógica de analyze_repo
     root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
     endpoints: List[Endpoint] = []
     for p in files:
@@ -624,7 +615,6 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
             f"Tente aumentar 'max_files' (atual {max_files}) ou 'max_size_kb' (atual {max_size_kb})."
         )
 
-    # bullets arquitetura
     bullets = []
     if arch.is_microservices: bullets.append("Arquitetura de **microserviços** detectada.")
     if arch.is_hexagonal: bullets.append("Sinais de **Arquitetura Hexagonal (Ports & Adapters)**.")
@@ -635,7 +625,6 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
     if arch.message_brokers: bullets.append("Mensageria: " + ", ".join(arch.message_brokers))
     if arch.infra_signals: bullets.append("Infra: " + ", ".join(arch.infra_signals))
 
-    # bullets segurança
     sec_bullets = []
     if security.auth_present: sec_bullets.append("Autenticação detectada.")
     if security.csrf_present: sec_bullets.append("CSRF presente.")
@@ -648,142 +637,61 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
     if security.secrets_in_code:
         sec_bullets.append("⚠️ Possíveis segredos em código (amostras): " + "; ".join(security.secrets_in_code))
 
-    # --- diagramas ---
-    # Removida geração de diagramas pois não serão mais usados
+    flow = mermaid_flow(endpoints, arch)
+    seq  = mermaid_sequence(endpoints)
 
-    # Analisa o repositório
-    root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
-    endpoints: List[Endpoint] = []
-    for p in files:
-        t = texts.get(p)
-        if t:
-            endpoints.extend(extract_endpoints_for_file(p, t))
-    arch_guess = guess_arch(root, files, texts)
-    security, stride, evidence = extract_security_and_stride(texts)
-
-    # Extrai frameworks, infra e databases do arch_guess
-    frameworks = arch_guess.drivers
-    infra = arch_guess.infra_signals
-    databases = arch_guess.data_stores
-
-    # Gera o resumo em markdown
     md = []
-    
-    # Cabeçalho com resumo da arquitetura
-    md.append("# Análise do Repositório\n")
-    
-    # Arquitetura
-    md.append("## Arquitetura")
-    md.append("- Framework: " + (", ".join(frameworks) if frameworks else "não detectado"))
-    # Determina o tipo de arquitetura
-    arch_type = []
-    if arch_guess.is_microservices: arch_type.append("Microservicos")
-    if arch_guess.is_hexagonal: arch_type.append("Hexagonal")
-    if arch_guess.is_clean_layered: arch_type.append("Clean/Layered")
-    if arch_guess.is_monolith: arch_type.append("Monolito")
-    arch_name = ", ".join(arch_type) if arch_type else "Não detectada"
-    
-    md.append("- Arquitetura: " + arch_name)
-    md.append("")
+    md.append(f"# Relatório de Arquitetura e STRIDE – {root}\n")
+    if limits_hit and limits_note:
+        md.append(f"> **Nota:** {limits_note}\n")
+    md.append("## Resumo Arquitetural")
+    md.extend([f"- {b}" for b in bullets] or ["- (sem sinais fortes)"])
+    md.append("\n## Controles/Sinais de Segurança")
+    md.extend([f"- {b}" for b in sec_bullets] or ["- (não encontramos controles claros)"])
 
-    # Endpoints em tabela
+    md.append("\n## Endpoints (amostra)")
     if endpoints:
-        md.append("## Endpoints")
-        md.append("| Método | Path | Handler | Lang |")
-        md.append("|--------|------|---------|------|")
-        for e in endpoints:
-            handler = e.handler if e.handler else ""
-            lang = e.lang if e.lang else ""
-            md.append(f"| {e.method} | {e.path} | {handler} | {lang} |")
-        md.append("")
+        for e in endpoints[:60]:
+            fw = f" ({e.framework})" if e.framework else ""
+            h  = f" | handler: `{e.handler}`" if e.handler else ""
+            lang = f" | lang: {e.language}" if e.language else ""
+            md.append(f"- **{e.method} {e.path}**{fw}{lang} — `{e.file}`{h}")
+    else:
+        md.append("- (nenhum endpoint detectado)")
 
-    # Segurança
-    if sec_bullets:
-        md.append("## Segurança")
-        for b in sec_bullets:
-            md.append("- " + b)
-        md.append("")
+    md.append("\n## STRIDE (achados heurísticos)")
+    for key, title in [("S","Spoofing"),("T","Tampering"),("R","Repudiation"),("I","Information Disclosure"),("D","Denial of Service"),("E","Elevation of Privilege")]:
+        items = (stride or {}).get(key) or []
+        md.append(f"### {title}")
+        if items:
+            md.extend([f"- {it}" for it in items])
+        else:
+            md.append("- Sem achados fortes.")
 
-    # Diagramas
-    md.append("## Diagramas\n")
+    md.append("\n## Evidências de segurança (arquivo:linha)")
+    if evidence:
+        by_key: Dict[str, List[Evidence]] = {}
+        for ev in evidence:
+            by_key.setdefault(ev.key, []).append(ev)
+        order = [
+            "auth_present","jwt_usage","cors_overly_permissive","csrf_present",
+            "hsts_present","debug_exposed","secret","upload","external_call"
+        ]
+        for k in order:
+            items = by_key.get(k, [])
+            if not items:
+                continue
+            md.append(f"### {k}")
+            for ev in items[:80]:
+                md.append(f"- `{ev.file}:{ev.line}` — {ev.text}")
+    else:
+        md.append("- (nenhuma evidência localizada)")
 
-    # Diagrama de fluxo
-    md.append("### Fluxo")
-    md.append("```mermaid")
-    md.append("flowchart TD")
-    md.append("    classDef note fill:#fff,stroke:#999,color:#333")
-    md.append('    U["Usuario/Cliente"] -->|HTTP| GW["Router/API Gateway"]')
-    md.append('    DB[(Repositorio/DB)]')
-    md.append('    subgraph App["Aplicacao / Servicos"]')
-    
-    for i, e in enumerate(endpoints, 1):
-        safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace("*", "\\*").replace("/", "\\/").replace('"', '\\"')
-        safe_handler = e.handler.replace('"', '\\"').replace("*", "\\*").replace("/", "\\/") if e.handler else ""
-        endpoint_text = f"{e.method} {safe_path}"
-        handler_text = f"Handler ({e.lang})<br/>{safe_handler}" if e.handler else f"Handler ({e.lang})"
-        
-        md.append(f'        GW --> E{i}["{endpoint_text}"]')
-        md.append(f'        E{i}["{endpoint_text}"] --> H{i}["{handler_text}"]')
-        md.append(f'        H{i} --> S{i}["Servico"]')
-        md.append(f'        S{i} --> DB')
-
-    md.append("    end")
-    # Determina o tipo de arquitetura para o diagrama
-    arch_type = []
-    if arch_guess.is_microservices: arch_type.append("Microservicos")
-    if arch_guess.is_hexagonal: arch_type.append("Hexagonal")
-    if arch_guess.is_clean_layered: arch_type.append("Clean/Layered")
-    if arch_guess.is_monolith: arch_type.append("Monolito")
-    arch_name = ", ".join(arch_type) if arch_type else "Não detectada"
-    
-    md.append(f'    N0["{arch_name}<br/>Infra: {", ".join(infra) if infra else "não detectado"}<br/>Dados: {", ".join(databases) if databases else "não detectado"}"]:::note')
-    md.append("    GW -.-> N0")
-    md.append("```\n")
-
-    # Diagrama de sequência
-    md.append("### Sequência")
-    md.append("```mermaid")
-    md.append("sequenceDiagram")
-    md.append("    participant DB as Repositorio/DB")
-    md.append("    participant S as Servico")
-    md.append("    participant H as Handler")
-    md.append("    participant GW as Router")
-    md.append("    participant C as Cliente")
-    
-    for e in endpoints:
-        safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace("*", "\\*").replace("/", "\\/").replace('"', '\\"')
-        endpoint = f"{e.method} {safe_path}"
-        
-        md.append(f"    Note over C,DB: {endpoint}")
-        md.append("    C->>+GW: HTTP Request")
-        md.append("    GW->>+H: delega")
-        md.append("    H->>+S: regra de negocio")
-        md.append("    S->>+DB: consulta/grava")
-        md.append("    DB-->>-S: resultado")
-        md.append("    S-->>-H: resultado")
-        md.append("    H-->>-GW: resultado")
-        md.append("    GW-->>-C: HTTP 200/4xx/5xx")
-        md.append("")
-
-    md.append("```\n")
-
-    # JSON com evidências de segurança
-    evidence_data = {
-        "evidence": [
-            {
-                "key": ev.key,
-                "file": ev.file,
-                "line": ev.line,
-                "text": ev.text
-            } for ev in evidence
-        ] if evidence else []
-    }
-    json_str = json.dumps(evidence_data, indent=2, ensure_ascii=False)
-    
-    md.append("## Evidências de Segurança")
-    md.append("```json")
-    md.append(json_str)
-    md.append("```")
+    md.append("\n## Diagramas")
+    md.append("### Fluxo (graph TD)")
+    md.append(flow)
+    md.append("\n### Sequência (sequenceDiagram)")
+    md.append(seq)
 
     return "\n".join(md)
 
