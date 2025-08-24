@@ -396,11 +396,11 @@ def extract_security_and_stride(texts: Dict[Path,str]) -> Tuple[SecuritySignals,
 
     if debug_exposed:
         I.append("Debug ligado em produção (leak de stacktrace/config).")
-        # (já tem evidência de debug_exposed)
+       
 
     if cors_overly:
         I.append("CORS permissivo (origem '*').")
-        # (já tem evidência de cors_overly_permissive)
+       
 
     # XSS e Input Validation
     xss_patterns = [
@@ -598,10 +598,10 @@ def _generate_diagrams_md(endpoints: List[Endpoint], arch: ArchGuess) -> str:
     flow = mermaid_flow(endpoints, arch)
     seq  = mermaid_sequence(endpoints)
     md = [
-        "## Diagramas",
-        "### Fluxo (flowchart TD)",
+        "\n## Diagramas",
+        "\n### Fluxo",
         flow,
-        "### Sequência",
+        "\n### Sequência",
         seq
     ]
     return "\n".join(md)
@@ -666,20 +666,117 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     bullets_arch = []
     
     # Arquitetura
-    if arch.is_microservices: bullets_arch.append("🏗️ Arquitetura de **microserviços** detectada")
-    if arch.is_hexagonal: bullets_arch.append("🏗️ Sinais de **Arquitetura Hexagonal (Ports & Adapters)**")
-    if arch.is_clean_layered: bullets_arch.append("🏗️ Sinais de **Camadas/Clean Architecture**")
-    if arch.is_monolith: bullets_arch.append("🏗️ Provável **monólito**")
+    if arch.is_microservices:
+        evidencias = []
+        if any(p.name == "docker-compose.yml" or p.name == "docker-compose.yaml" for p in files):
+            file = next(p for p in files if p.name in {"docker-compose.yml", "docker-compose.yaml"})
+            evidencias.append(f"[{file.name}:1]({file}#1)")
+        if len([p for p in files if p.name == "Dockerfile"]) >= 2:
+            dockerfiles = [p for p in files if p.name == "Dockerfile"]
+            evidencias.extend(f"[{p.parent.name}/Dockerfile:1]({p}#1)" for p in dockerfiles[:3])
+        bullets_arch.append("🏗️ Arquitetura de **microserviços** detectada" + (" — " + ", ".join(evidencias) if evidencias else ""))
+    
+    if arch.is_hexagonal:
+        evidencias = []
+        for p in files:
+            for part in p.parts:
+                if part.lower() in HEXAGONAL_HINTS:
+                    evidencias.append(f"[{p.name}:1]({p}#1)")
+                    break
+        bullets_arch.append("🏗️ Sinais de **Arquitetura Hexagonal (Ports & Adapters)**" + (" — " + ", ".join(evidencias[:3]) if evidencias else ""))
+    
+    if arch.is_clean_layered:
+        evidencias = []
+        for p in files:
+            for part in p.parts:
+                if part.lower() in LAYERED_HINTS:
+                    evidencias.append(f"[{p.name}:1]({p}#1)")
+                    break
+        bullets_arch.append("🏗️ Sinais de **Camadas/Clean Architecture**" + (" — " + ", ".join(evidencias[:3]) if evidencias else ""))
+    
+    if arch.is_monolith:
+        bullets_arch.append("🏗️ Provável **monólito**")
     
     # Frameworks e Tecnologias
-    if arch.drivers: bullets_arch.append("⚙️ Frameworks: " + ", ".join(arch.drivers))
+    if arch.drivers:
+        framework_evidencias = {}
+        for fw in arch.drivers:
+            for p, t in texts.items():
+                if fw == "fastapi" and "fastapi" in t:
+                    framework_evidencias[fw] = str(p)
+                    break
+                elif fw == "flask" and ("from flask import" in t or "flask(" in t):
+                    framework_evidencias[fw] = str(p)
+                    break
+                elif fw == "django" and "urls.py" in str(p):
+                    framework_evidencias[fw] = str(p)
+                    break
+                elif fw == "express" and ("express" in t or "app.listen(" in t):
+                    framework_evidencias[fw] = str(p)
+                    break
+                elif fw == "spring" and ("@springbootapplication" in t.lower() or "<artifactid>spring-boot" in t.lower()):
+                    framework_evidencias[fw] = str(p)
+                    break
+        
+        frameworks_str = []
+        for fw in arch.drivers:
+            if fw in framework_evidencias:
+                frameworks_str.append(f"{fw} ([{Path(framework_evidencias[fw]).name}]({framework_evidencias[fw]}))")
+            else:
+                frameworks_str.append(fw)
+        bullets_arch.append("⚙️ Frameworks: " + ", ".join(frameworks_str))
     
     # Dados e Mensageria
-    if arch.data_stores: bullets_arch.append("💾 Bancos de dados: " + ", ".join(arch.data_stores))
-    if arch.message_brokers: bullets_arch.append("📨 Mensageria: " + ", ".join(arch.message_brokers))
+    if arch.data_stores:
+        db_evidencias = {}
+        for db in arch.data_stores:
+            for p, t in texts.items():
+                if db in t.lower():
+                    db_evidencias[db] = str(p)
+                    break
+        dbs_str = []
+        for db in arch.data_stores:
+            if db in db_evidencias:
+                dbs_str.append(f"{db} ([{Path(db_evidencias[db]).name}]({db_evidencias[db]}))")
+            else:
+                dbs_str.append(db)
+        bullets_arch.append("💾 Bancos de dados: " + ", ".join(dbs_str))
+    
+    if arch.message_brokers:
+        broker_evidencias = {}
+        for broker in arch.message_brokers:
+            for p, t in texts.items():
+                if broker in t.lower():
+                    broker_evidencias[broker] = str(p)
+                    break
+        brokers_str = []
+        for broker in arch.message_brokers:
+            if broker in broker_evidencias:
+                brokers_str.append(f"{broker} ([{Path(broker_evidencias[broker]).name}]({broker_evidencias[broker]}))")
+            else:
+                brokers_str.append(broker)
+        bullets_arch.append("📨 Mensageria: " + ", ".join(brokers_str))
     
     # Infraestrutura
-    if arch.infra_signals: bullets_arch.append("🚀 Infraestrutura: " + ", ".join(arch.infra_signals))
+    if arch.infra_signals:
+        infra_evidencias = {}
+        for infra in arch.infra_signals:
+            if infra == "docker-compose":
+                file = next((p for p in files if p.name in {"docker-compose.yml", "docker-compose.yaml"}), None)
+                if file:
+                    infra_evidencias[infra] = str(file)
+            elif infra == "kubernetes":
+                file = next((p for p in files if p.name in K8S_HINTS), None)
+                if file:
+                    infra_evidencias[infra] = str(file)
+        
+        infra_str = []
+        for infra in arch.infra_signals:
+            if infra in infra_evidencias:
+                infra_str.append(f"{infra} ([{Path(infra_evidencias[infra]).name}]({infra_evidencias[infra]}))")
+            else:
+                infra_str.append(infra)
+        bullets_arch.append("🚀 Infraestrutura: " + ", ".join(infra_str))
     
     # Endpoints e Rotas
     total_endpoints = len(endpoints)
@@ -760,8 +857,16 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
                 file_path = str(Path(e.file).resolve()).replace("\\", "/")
                 file_name = Path(e.file).name
                 handler = e.handler if e.handler else "-"
-                line = 1  # TODO: melhorar para pegar linha exata
-                md_parts.append(f"| {e.method} | `{e.path}` | `{handler}` | [{file_name}:{line}]({file_path}#{line}) |")
+                # Procurar a linha real do endpoint
+                line = 1
+                if e.file in texts:
+                    text = texts[e.file]
+                    lines = text.splitlines()
+                    for i, line_text in enumerate(lines, 1):
+                        if e.path in line_text and (e.method == "*" or e.method.lower() in line_text.lower()):
+                            line = i
+                            break
+                md_parts.append(f"| {e.method} | `{e.path}` | `{handler}` | [{file_name}:{line}]({file_path}#L{line}) |")
 
     # === SEGURANÇA (Controles + Vulnerabilidades) ===
     md_parts.append("\n## Segurança")
@@ -787,11 +892,16 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         md_parts.append("|------|---------------|--------|")
         for k in control_keys:
             for ev in by_key.get(k, []):
-                snippet = (ev.text or "").replace("|", "\\|")
+                # Limitar o tamanho do snippet e escapar caracteres especiais
+                snippet = (ev.text or "").strip()
+                if len(snippet) > 120:  # Reduzir tamanho máximo do snippet
+                    snippet = snippet[:117] + "..."
+                snippet = snippet.replace("|", "\\|").replace("\n", " ")
+                
                 # Criar link clicável para o arquivo:linha
-                file_path = str(Path(ev.file).resolve()).replace("\\", "/")  # Garantir formato correto de path
+                file_path = str(Path(ev.file).resolve()).replace("\\", "/")
                 file_name = Path(ev.file).name
-                md_parts.append(f"| {controls.get(k, k)} | [{file_name}:{ev.line}]({file_path}#{ev.line}) | {snippet} |")
+                md_parts.append(f"| {controls.get(k, k)} | [{file_name}:{ev.line}]({file_path}#L{ev.line}) | {snippet} |")
     else:
         md_parts.append("- (nenhum controle de segurança detectado)")
 
@@ -835,11 +945,16 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         md_parts.append("|------|---------------|--------|")
         for k in vuln_keys:
             for ev in by_key.get(k, []):
-                snippet = (ev.text or "").replace("|", "\\|")
+                # Limitar o tamanho do snippet e escapar caracteres especiais
+                snippet = (ev.text or "").strip()
+                if len(snippet) > 120:  # Reduzir tamanho máximo do snippet
+                    snippet = snippet[:117] + "..."
+                snippet = snippet.replace("|", "\\|").replace("\n", " ")
+                
                 # Criar link clicável para o arquivo:linha
-                file_path = str(Path(ev.file).resolve()).replace("\\", "/")  # Garantir formato correto de path
+                file_path = str(Path(ev.file).resolve()).replace("\\", "/")
                 file_name = Path(ev.file).name
-                md_parts.append(f"| {vulns.get(k, k)} | [{file_name}:{ev.line}]({file_path}#{ev.line}) | {snippet} |")
+                md_parts.append(f"| {vulns.get(k, k)} | [{file_name}:{ev.line}]({file_path}#L{ev.line}) | {snippet} |")
     else:
         md_parts.append("- (nenhuma vulnerabilidade detectada)")
 
