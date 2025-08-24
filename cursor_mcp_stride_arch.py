@@ -668,15 +668,15 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
             md.append("  - " + d)
     md.append("")
 
-    # Endpoints 
+    # Endpoints em tabela
     if endpoints:
         md.append("## Endpoints")
+        md.append("| Método | Path | Handler | Lang |")
+        md.append("|--------|------|---------|------|")
         for e in endpoints:
-            md.append(f"- {e.method} {e.path}")
-            if e.handler:
-                md.append(f"  - Handler: {e.handler}")
-            if e.lang:
-                md.append(f"  - Lang: {e.lang}")
+            handler = e.handler if e.handler else ""
+            lang = e.lang if e.lang else ""
+            md.append(f"| {e.method} | {e.path} | {handler} | {lang} |")
         md.append("")
 
     # Segurança
@@ -685,6 +685,61 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
         for b in sec_bullets:
             md.append("- " + b)
         md.append("")
+
+    # Diagramas
+    md.append("## Diagramas\n")
+
+    # Diagrama de fluxo
+    md.append("### Fluxo")
+    md.append("```mermaid")
+    md.append("flowchart TD")
+    md.append("    classDef note fill:#fff,stroke:#999,color:#333")
+    md.append('    U["Usuario/Cliente"] -->|HTTP| GW["Router/API Gateway"]')
+    md.append('    DB[(Repositorio/DB)]')
+    md.append('    subgraph App["Aplicacao / Servicos"]')
+    
+    for i, e in enumerate(endpoints, 1):
+        safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace("*", "\\*").replace("/", "\\/").replace('"', '\\"')
+        safe_handler = e.handler.replace('"', '\\"').replace("*", "\\*").replace("/", "\\/") if e.handler else ""
+        endpoint_text = f"{e.method} {safe_path}"
+        handler_text = f"Handler ({e.lang})<br/>{safe_handler}" if e.handler else f"Handler ({e.lang})"
+        
+        md.append(f'        GW --> E{i}["{endpoint_text}"]')
+        md.append(f'        E{i}["{endpoint_text}"] --> H{i}["{handler_text}"]')
+        md.append(f'        H{i} --> S{i}["Servico"]')
+        md.append(f'        S{i} --> DB')
+
+    md.append("    end")
+    md.append(f'    N0["{arch_guess.name}<br/>Infra: {", ".join(infra) if infra else "não detectado"}<br/>Dados: {", ".join(databases) if databases else "não detectado"}"]:::note')
+    md.append("    GW -.-> N0")
+    md.append("```\n")
+
+    # Diagrama de sequência
+    md.append("### Sequência")
+    md.append("```mermaid")
+    md.append("sequenceDiagram")
+    md.append("    participant DB as Repositorio/DB")
+    md.append("    participant S as Servico")
+    md.append("    participant H as Handler")
+    md.append("    participant GW as Router")
+    md.append("    participant C as Cliente")
+    
+    for e in endpoints:
+        safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace("*", "\\*").replace("/", "\\/").replace('"', '\\"')
+        endpoint = f"{e.method} {safe_path}"
+        
+        md.append(f"    Note over C,DB: {endpoint}")
+        md.append("    C->>+GW: HTTP Request")
+        md.append("    GW->>+H: delega")
+        md.append("    H->>+S: regra de negocio")
+        md.append("    S->>+DB: consulta/grava")
+        md.append("    DB-->>-S: resultado")
+        md.append("    S-->>-H: resultado")
+        md.append("    H-->>-GW: resultado")
+        md.append("    GW-->>-C: HTTP 200/4xx/5xx")
+        md.append("")
+
+    md.append("```\n")
 
     # JSON com evidências de segurança
     evidence_data = {
