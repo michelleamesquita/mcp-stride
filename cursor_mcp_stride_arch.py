@@ -651,7 +651,42 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
     # --- diagramas ---
     # Removida geração de diagramas pois não serão mais usados
 
-    # Retorna apenas o JSON com as evidências de segurança
+    # Gera o resumo em markdown
+    md = []
+    
+    # Cabeçalho com resumo da arquitetura
+    md.append("# Análise do Repositório\n")
+    
+    # Arquitetura
+    md.append("## Arquitetura")
+    md.append("- Framework: " + (", ".join(frameworks) if frameworks else "não detectado"))
+    md.append("- Arquitetura: " + arch_guess.name)
+    if arch_guess.confidence:
+        md.append("  - " + arch_guess.confidence)
+    if arch_guess.details:
+        for d in arch_guess.details:
+            md.append("  - " + d)
+    md.append("")
+
+    # Endpoints 
+    if endpoints:
+        md.append("## Endpoints")
+        for e in endpoints:
+            md.append(f"- {e.method} {e.path}")
+            if e.handler:
+                md.append(f"  - Handler: {e.handler}")
+            if e.lang:
+                md.append(f"  - Lang: {e.lang}")
+        md.append("")
+
+    # Segurança
+    if sec_bullets:
+        md.append("## Segurança")
+        for b in sec_bullets:
+            md.append("- " + b)
+        md.append("")
+
+    # JSON com evidências de segurança
     evidence_data = {
         "evidence": [
             {
@@ -662,7 +697,14 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
             } for ev in evidence
         ] if evidence else []
     }
-    return json.dumps(evidence_data, indent=2, ensure_ascii=False)
+    json_str = json.dumps(evidence_data, indent=2, ensure_ascii=False)
+    
+    md.append("## Evidências de Segurança")
+    md.append("```json")
+    md.append(json_str)
+    md.append("```")
+
+    return "\n".join(md)
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
