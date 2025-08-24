@@ -721,7 +721,9 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         frameworks_str = []
         for fw in arch.drivers:
             if fw in framework_evidencias:
-                frameworks_str.append(f"{fw} ([{Path(framework_evidencias[fw]).name}]({framework_evidencias[fw]}))")
+                file_path = framework_evidencias[fw]
+                file_name = Path(file_path).name
+                frameworks_str.append(f"{fw} ([{file_name}:1]({file_path}#L1))")
             else:
                 frameworks_str.append(fw)
         bullets_arch.append("⚙️ Frameworks: " + ", ".join(frameworks_str))
@@ -737,7 +739,9 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         dbs_str = []
         for db in arch.data_stores:
             if db in db_evidencias:
-                dbs_str.append(f"{db} ([{Path(db_evidencias[db]).name}]({db_evidencias[db]}))")
+                file_path = db_evidencias[db]
+                file_name = Path(file_path).name
+                dbs_str.append(f"{db} ([{file_name}:1]({file_path}#L1))")
             else:
                 dbs_str.append(db)
         bullets_arch.append("💾 Bancos de dados: " + ", ".join(dbs_str))
@@ -752,7 +756,9 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         brokers_str = []
         for broker in arch.message_brokers:
             if broker in broker_evidencias:
-                brokers_str.append(f"{broker} ([{Path(broker_evidencias[broker]).name}]({broker_evidencias[broker]}))")
+                file_path = broker_evidencias[broker]
+                file_name = Path(file_path).name
+                brokers_str.append(f"{broker} ([{file_name}:1]({file_path}#L1))")
             else:
                 brokers_str.append(broker)
         bullets_arch.append("📨 Mensageria: " + ", ".join(brokers_str))
@@ -773,7 +779,9 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         infra_str = []
         for infra in arch.infra_signals:
             if infra in infra_evidencias:
-                infra_str.append(f"{infra} ([{Path(infra_evidencias[infra]).name}]({infra_evidencias[infra]}))")
+                file_path = infra_evidencias[infra]
+                file_name = Path(file_path).name
+                infra_str.append(f"{infra} ([{file_name}:1]({file_path}#L1))")
             else:
                 infra_str.append(infra)
         bullets_arch.append("🚀 Infraestrutura: " + ", ".join(infra_str))
@@ -862,10 +870,62 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
                 if e.file in texts:
                     text = texts[e.file]
                     lines = text.splitlines()
+                    # Primeiro tenta encontrar o decorador/definição exata
                     for i, line_text in enumerate(lines, 1):
-                        if e.path in line_text and (e.method == "*" or e.method.lower() in line_text.lower()):
+                        if any([
+                            # Python (FastAPI, Flask)
+                            f"@app.{e.method.lower()}('{e.path}')" in line_text,
+                            f'@app.{e.method.lower()}("{e.path}")' in line_text,
+                            f"@app.route('{e.path}')" in line_text,
+                            f'@app.route("{e.path}")' in line_text,
+                            f"@app.route('{e.path}', methods=[" in line_text,
+                            f'@app.route("{e.path}", methods=[' in line_text,
+                            # Express.js
+                            f"app.{e.method.lower()}('{e.path}'," in line_text,
+                            f'app.{e.method.lower()}("{e.path}",' in line_text,
+                            f"router.{e.method.lower()}('{e.path}'," in line_text,
+                            f'router.{e.method.lower()}("{e.path}",' in line_text,
+                            # Spring
+                            f"@RequestMapping('{e.path}')" in line_text,
+                            f'@RequestMapping("{e.path}")' in line_text,
+                            f"@{e.method.capitalize()}Mapping('{e.path}')" in line_text,
+                            f'@{e.method.capitalize()}Mapping("{e.path}")' in line_text,
+                            # Django
+                            f"path('{e.path}'," in line_text,
+                            f'path("{e.path}",' in line_text,
+                            f"url(r'^{e.path}'," in line_text,
+                            f'url(r"{e.path}",' in line_text,
+                        ]):
                             line = i
                             break
+                    
+                    # Se não encontrou, procura por padrões mais genéricos
+                    if line == 1:
+                        for i, line_text in enumerate(lines, 1):
+                            if any([
+                                # Decoradores Python
+                                f"@app.route('{e.path}" in line_text,
+                                f'@app.route("{e.path}' in line_text,
+                                f"@app.{e.method.lower()}('{e.path}" in line_text,
+                                f'@app.{e.method.lower()}("{e.path}' in line_text,
+                                # Express/Node
+                                f"app.{e.method.lower()}('{e.path}" in line_text,
+                                f'app.{e.method.lower()}("{e.path}' in line_text,
+                                f"router.{e.method.lower()}('{e.path}" in line_text,
+                                f'router.{e.method.lower()}("{e.path}' in line_text,
+                                # Django
+                                f"path('{e.path}" in line_text,
+                                f'path("{e.path}' in line_text,
+                            ]):
+                                line = i
+                                break
+                    
+                    # Se ainda não encontrou, procura pelo path em qualquer lugar
+                    if line == 1:
+                        for i, line_text in enumerate(lines, 1):
+                            if e.path in line_text and (e.method == "*" or e.method.lower() in line_text.lower()):
+                                line = i
+                                break
                 md_parts.append(f"| {e.method} | `{e.path}` | `{handler}` | [{file_name}:{line}]({file_path}#L{line}) |")
 
     # === SEGURANÇA (Controles + Vulnerabilidades) ===
@@ -894,14 +954,22 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
             for ev in by_key.get(k, []):
                 # Limitar o tamanho do snippet e escapar caracteres especiais
                 snippet = (ev.text or "").strip()
-                if len(snippet) > 120:  # Reduzir tamanho máximo do snippet
-                    snippet = snippet[:117] + "..."
-                snippet = snippet.replace("|", "\\|").replace("\n", " ")
+                if len(snippet) > 80:  # Reduzir ainda mais o tamanho máximo do snippet
+                    snippet = snippet[:77] + "..."
+                # Escapar caracteres especiais e remover quebras de linha
+                snippet = (
+                    snippet.replace("\\", "\\\\")
+                            .replace("|", "\\|")
+                            .replace("\n", " ")
+                            .replace("\r", "")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;")
+                )
                 
                 # Criar link clicável para o arquivo:linha
                 file_path = str(Path(ev.file).resolve()).replace("\\", "/")
                 file_name = Path(ev.file).name
-                md_parts.append(f"| {controls.get(k, k)} | [{file_name}:{ev.line}]({file_path}#L{ev.line}) | {snippet} |")
+                md_parts.append(f"| {controls.get(k, k)} | [{file_name}:{ev.line}]({file_path}#L{ev.line}) | `{snippet}` |")
     else:
         md_parts.append("- (nenhum controle de segurança detectado)")
 
@@ -947,14 +1015,22 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
             for ev in by_key.get(k, []):
                 # Limitar o tamanho do snippet e escapar caracteres especiais
                 snippet = (ev.text or "").strip()
-                if len(snippet) > 120:  # Reduzir tamanho máximo do snippet
-                    snippet = snippet[:117] + "..."
-                snippet = snippet.replace("|", "\\|").replace("\n", " ")
+                if len(snippet) > 80:  # Reduzir ainda mais o tamanho máximo do snippet
+                    snippet = snippet[:77] + "..."
+                # Escapar caracteres especiais e remover quebras de linha
+                snippet = (
+                    snippet.replace("\\", "\\\\")
+                            .replace("|", "\\|")
+                            .replace("\n", " ")
+                            .replace("\r", "")
+                            .replace("<", "&lt;")
+                            .replace(">", "&gt;")
+                )
                 
                 # Criar link clicável para o arquivo:linha
                 file_path = str(Path(ev.file).resolve()).replace("\\", "/")
                 file_name = Path(ev.file).name
-                md_parts.append(f"| {vulns.get(k, k)} | [{file_name}:{ev.line}]({file_path}#L{ev.line}) | {snippet} |")
+                md_parts.append(f"| {vulns.get(k, k)} | [{file_name}:{ev.line}]({file_path}#L{ev.line}) | `{snippet}` |")
     else:
         md_parts.append("- (nenhuma vulnerabilidade detectada)")
 
