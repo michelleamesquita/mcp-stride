@@ -215,7 +215,7 @@ def extract_endpoints_for_file(p: Path, text: str) -> List[Endpoint]:
 
 # -------------------------- HEURÍSTICAS DE ARQUITETURA -----------------------------
 
-HEXAGONAL_HINTS = {"domain", "application", "app", "usecase", "use_case", "ports", "port", "adapters", "adapter", "infrastructure", "infra"}
+HEXAGONAL_HINTS = {"domain", "usecase", "use_case", "ports", "port", "adapters", "adapter"}
 LAYERED_HINTS = {"controllers", "controller", "services", "service", "repositories", "repository"}
 DB_HINTS = {"postgres", "mysql", "mariadb", "sqlite", "redis", "mongodb", "dynamodb"}
 BROKER_HINTS = {"kafka", "rabbitmq", "sqs", "sns"}
@@ -336,38 +336,166 @@ def extract_security_and_stride(texts: Dict[Path,str]) -> Tuple[SecuritySignals,
     if re.search(r"\bfetch\(", bigtxt): external_calls.append("js:fetch")
     if re.search(r"\bhttp\.Get\(", bigtxt): external_calls.append("go:http")
 
-    # STRIDE heurístico (mensagens)
-    if not auth_present: S.append("Ausência de autenticação/guardas visíveis.")
+    # STRIDE heurístico (mensagens + evidências)
+    if not auth_present:
+        S.append("Ausência de autenticação/guardas visíveis.")
+        add_ev("no_auth", Path(""), 0, "Nenhum mecanismo de autenticação detectado")
+
     if jwt_usage and re.search(r"jwt\.(decode|verify)\(.*verify=False", bigtxt, re.I):
         S.append("JWT sendo decodificado sem verificação adequada.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if re.search(r"jwt\.(decode|verify)\(.*verify=False", line, re.I):
+                    add_ev("jwt_no_verify", p, idx, line)
+
     if re.search(r"\bsubprocess\.(Popen|run)\(.*\+", bigtxt):
         T.append("Possível Command Injection (subprocess com concatenação).")
-    if re.search(r"\bexecute\(.+[%]\s*\(", bigtxt) or "text(" in bigtxt:
-        T.append("Possível SQL dinâmico sem bind parameters.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if re.search(r"\bsubprocess\.(Popen|run)\(.*\+", line):
+                    add_ev("command_injection", p, idx, line)
+
+    # SQL Injection e SQL dinâmico
+    sql_patterns = [
+        (r"\bexecute\(.+[%]\s*\(", "sql_dynamic", "SQL dinâmico sem bind parameters"),
+        (r"text\(.+\+.+\)", "sql_injection", "Concatenação de strings em SQL"),
+        (r"execute\(.+\+.+\)", "sql_injection", "Concatenação de strings em SQL"),
+        (r"cursor\.execute\(.+\+.+\)", "sql_injection", "Concatenação de strings em SQL"),
+        (r"\.query\(.+\+.+\)", "sql_injection", "Concatenação de strings em SQL"),
+        (r"\.raw\(.+\+.+\)", "sql_injection", "SQL raw com concatenação")
+    ]
+    for pattern, key, msg in sql_patterns:
+        if re.search(pattern, bigtxt, re.I):
+            T.append(msg)
+            for p, t in texts.items():
+                for idx, line in enumerate(t.splitlines()):
+                    if re.search(pattern, line, re.I):
+                        add_ev(key, p, idx, line)
+
     if "yaml.load(" in bigtxt and "SafeLoader" not in bigtxt:
         T.append("YAML load inseguro (use SafeLoader).")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if "yaml.load(" in line and "SafeLoader" not in line:
+                    add_ev("yaml_unsafe", p, idx, line)
+
     if "pickle.loads(" in bigtxt or "marshal.loads(" in bigtxt:
         T.append("Desserialização insegura.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if "pickle.loads(" in line or "marshal.loads(" in line:
+                    add_ev("insecure_deser", p, idx, line)
+
     if "logging" not in bigtxt.lower():
         R.append("Poucos sinais de auditoria/logs estruturados.")
+        add_ev("no_logs", Path(""), 0, "Nenhum uso de logging estruturado detectado")
+
     if not re.search(r"(trace_id|correlation)", bigtxt, re.I):
         R.append("Sem correlação de requisições (trace_id).")
-    if debug_exposed: I.append("Debug ligado em produção (leak de stacktrace/config).")
-    if cors_overly:  I.append("CORS permissivo (origem '*').")
+        add_ev("no_trace", Path(""), 0, "Nenhum uso de trace_id/correlação detectado")
+
+    if debug_exposed:
+        I.append("Debug ligado em produção (leak de stacktrace/config).")
+        # (já tem evidência de debug_exposed)
+
+    if cors_overly:
+        I.append("CORS permissivo (origem '*').")
+        # (já tem evidência de cors_overly_permissive)
+
+    # XSS e Input Validation
+    xss_patterns = [
+        (r"render_template\(.+\+.+\)", "xss_possible", "Template com concatenação de strings"),
+        (r"\.html\(.+\)", "xss_raw_html", "Uso de .html() sem escape"),
+        (r"innerHTML\s*=", "xss_raw_html", "Uso de innerHTML"),
+        (r"dangerouslySetInnerHTML", "xss_raw_html", "Uso de dangerouslySetInnerHTML"),
+        (r"__html__", "xss_raw_html", "Uso de __html__ sem escape"),
+        (r"\.raw\(.+\)", "raw_render", "Uso de .raw() sem escape"),
+        (r"safe\(.+\)", "raw_render", "Uso de |safe sem escape"),
+        (r"mark_safe\(.+\)", "raw_render", "Uso de mark_safe sem escape")
+    ]
+    for pattern, key, msg in xss_patterns:
+        if re.search(pattern, bigtxt, re.I):
+            I.append(msg)
+            for p, t in texts.items():
+                for idx, line in enumerate(t.splitlines()):
+                    if re.search(pattern, line, re.I):
+                        add_ev(key, p, idx, line)
+
+    # Input Validation
+    input_patterns = [
+        (r"request\.(args|form|json|data)\[.+\]", "raw_input_used", "Uso direto de input sem validação"),
+        (r"request\.get_json\(\)", "raw_input_used", "JSON sem validação de schema"),
+        (r"request\.files\[.+\]", "raw_input_used", "Upload sem validação de tipo"),
+        (r"@app\.route.*<\w+:.*>", "no_input_validation", "Parâmetro de rota sem validação"),
+        (r"params\[.+\]", "raw_input_used", "Parâmetros sem validação")
+    ]
+    for pattern, key, msg in input_patterns:
+        if re.search(pattern, bigtxt, re.I):
+            I.append(msg)
+            for p, t in texts.items():
+                for idx, line in enumerate(t.splitlines()):
+                    if re.search(pattern, line, re.I):
+                        add_ev(key, p, idx, line)
+
+    # Rate Limiting
+    rate_limit_frameworks = [
+        "flask_limiter",
+        "@limiter",
+        "rate_limit",
+        "RateLimit",
+        "throttle",
+        "Throttle"
+    ]
+    if not any(f in bigtxt for f in rate_limit_frameworks):
+        I.append("Sem rate limiting detectado.")
+        add_ev("no_rate_limit", Path(""), 0, "Nenhum mecanismo de rate limiting encontrado")
+
+    # Logs com segredos
     if re.search(r"print\(.+password|secret", bigtxt, re.I):
         I.append("Logs podem conter segredos/credenciais.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if re.search(r"print\(.+password|secret", line, re.I):
+                    add_ev("logs_with_secrets", p, idx, line)
+
     if re.search(r"DirectoryIndex On", bigtxt, re.I):
         I.append("Listagem de diretório habilitada.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if re.search(r"DirectoryIndex On", line, re.I):
+                    add_ev("dir_listing", p, idx, line)
+
     if re.search(r"re\.compile\(.+\)\.match\(.+user", bigtxt, re.I):
         D.append("Regex pesada com input do usuário (risco ReDoS).")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if re.search(r"re\.compile\(.+\)\.match\(.+user", line, re.I):
+                    add_ev("regex_redos", p, idx, line)
+
     if re.search(r"upload.*max.?size", bigtxt, re.I) is None and uploads:
         D.append("Uploads sem limite de tamanho/validação de tipo.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if re.search(r"upload", line, re.I) and not re.search(r"max.?size", line, re.I):
+                    add_ev("upload_no_size", p, idx, line)
+
     if "while True" in bigtxt and "sleep(" not in bigtxt:
         D.append("Loops sem controle/backoff podem causar DoS.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if "while True" in line and "sleep(" not in line:
+                    add_ev("busy_loop", p, idx, line)
+
     if auth_present and not re.search(r"(role|permission|authorize|acl)", bigtxt, re.I):
         E.append("Auth presente, mas sem evidência de autorização fina (RBAC/ABAC).")
+        add_ev("no_rbac", Path(""), 0, "Autenticação presente mas sem RBAC/autorização fina")
+
     if re.search(r"sudo ", bigtxt):
         E.append("Uso de sudo em automações/scripts da app.")
+        for p, t in texts.items():
+            for idx, line in enumerate(t.splitlines()):
+                if re.search(r"sudo ", line):
+                    add_ev("command_injection", p, idx, line)
 
     security = SecuritySignals(
         auth_present=auth_present,
@@ -576,27 +704,92 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     md_parts.append(f"# Análise de Repositório – {analysis.root}")
     if limits_note:
         md_parts.append(f"> **Nota:** {limits_note}")
+
+    # Resumo arquitetural
     md_parts.append("## Resumo Arquitetural")
     md_parts.extend([f"- {b}" for b in bullets_arch] or ["- (sem sinais fortes)"])
 
-    md_parts.append("\n## Controles/Sinais de Segurança")
+    # === SEGURANÇA (Controles + Evidências + Vulnerabilidades) ===
+    md_parts.append("\n## Segurança — Controles, Evidências e Vulnerabilidades")
+
+    md_parts.append("\n### 🔒 Controles de segurança)")
+    # Controles/Sinais (com refs arquivo:linha)
     if bullets_sec:
         md_parts.extend([f"- {b}" for b in bullets_sec])
     else:
         md_parts.append("- (não encontramos controles claros)")
 
-    # Endpoints — TODOS
-    md_parts.append("\n## Endpoints (todos)")
-    if endpoints:
-        md_parts.append("| Método | Path | Framework | Handler | Linguagem | Arquivo |")
-        md_parts.append("|--------|------|-----------|---------|-----------|---------|")
-        for e in endpoints:
-            fw = e.framework or ""
-            handler = f"`{e.handler}`" if e.handler else ""
-            lang = e.language or ""
-            md_parts.append(f"| {e.method} | {e.path} | {fw} | {handler} | {lang} | `{e.file}` |")
-    else:
-        md_parts.append("- (nenhum endpoint detectado)")
+    # Pontos de interesse e vulnerabilidades (arquivo:linha, tipo)
+    md_parts.append("\n### 🔍 Pontos de interesse e vulnerabilidades")
+    
+    # Indexar evidências por tipo
+    by_key = _index_evidence(evidence)
+    
+    # Separar em controles vs vulnerabilidades
+    controls = {
+        "auth_present": "Auth (informativo)",
+        "csrf_present": "CSRF (informativo)",
+        "hsts_present": "HSTS (informativo)",
+        "jwt_usage": "JWT (informativo)",
+        "upload": "Upload/Multi-part"
+    }
+    
+    vulns = {
+        "cors_overly_permissive": "⚠️ CORS permissivo",
+        "debug_exposed": "⚠️ Debug exposto",
+        "secret": "⚠️ Segredo em código",
+        "command_injection": "⚠️ Command Injection",
+        "sql_dynamic": "⚠️ SQL dinâmico sem bind parameters",
+        "sql_injection": "⚠️ SQL Injection possível",
+        "yaml_unsafe": "⚠️ YAML load inseguro",
+        "insecure_deser": "⚠️ Desserialização insegura",
+        "logs_leak": "⚠️ Logs com segredos",
+        "dir_listing": "⚠️ Listagem de diretório",
+        "regex_redos": "⚠️ Regex pesada/ReDoS",
+        "busy_loop": "⚠️ Loop sem backoff",
+        "jwt_no_verify": "⚠️ JWT sem verificação",
+        "external_call": "⚠️ Chamada externa",
+        "upload_no_size": "⚠️ Upload sem limite de tamanho",
+        "logs_with_secrets": "⚠️ Logs podem conter segredos",
+        "no_auth": "⚠️ Ausência de autenticação",
+        "no_rbac": "⚠️ Sem RBAC/autorização fina",
+        "no_logs": "⚠️ Sem logs estruturados",
+        "no_trace": "⚠️ Sem trace_id/correlação",
+        "xss_possible": "⚠️ XSS possível (sem escape)",
+        "xss_raw_html": "⚠️ XSS via raw HTML/innerHTML",
+        "no_input_validation": "⚠️ Sem validação de input",
+        "no_rate_limit": "⚠️ Sem rate limiting",
+        "no_input_sanitization": "⚠️ Sem sanitização de input",
+        "raw_input_used": "⚠️ Input usado sem tratamento",
+        "raw_render": "⚠️ Renderização direta de input"
+    }
+    
+    # Primeiro os controles
+    control_keys = list(controls.keys())
+    has_controls = any(by_key.get(k) for k in control_keys)
+    if has_controls:
+        md_parts.append("\n#### 🔒 Controles detectados")
+        md_parts.append("| Tipo | Arquivo:linha | Trecho |")
+        md_parts.append("|------|---------------|--------|")
+        for k in control_keys:
+            for ev in by_key.get(k, []):
+                snippet = (ev.text or "").replace("|", "\\|")
+                md_parts.append(f"| {controls.get(k, k)} | `{ev.file}:{ev.line}` | {snippet} |")
+    
+    # Depois as vulnerabilidades
+    vuln_keys = list(vulns.keys())
+    has_vulns = any(by_key.get(k) for k in vuln_keys)
+    if has_vulns:
+        md_parts.append("\n#### 🛑 Vulnerabilidades detectadas")
+        md_parts.append("| Tipo | Arquivo:linha | Trecho |")
+        md_parts.append("|------|---------------|--------|")
+        for k in vuln_keys:
+            for ev in by_key.get(k, []):
+                snippet = (ev.text or "").replace("|", "\\|")
+                md_parts.append(f"| {vulns.get(k, k)} | `{ev.file}:{ev.line}` | {snippet} |")
+
+    if not has_controls and not has_vulns:
+        md_parts.append("- (nenhum ponto de interesse ou vulnerabilidade detectada)")
 
     # STRIDE – Tabela (sem contagem)
     md_parts.append("\n## STRIDE – Tabela de vulnerabilidades")
@@ -619,17 +812,13 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
                 safe = msg.replace("|","\\|")
                 md_parts.append(f"| {label[k]} | {safe} |")
 
-    # Diagramas
+    # Diagramas Mermaid (mantidos)
     md_parts.append("")
     md_parts.append(_generate_diagrams_md(endpoints, arch))
 
-    # JSON completo
-    md_parts.append("\n---\n")
-    md_parts.append("```json")
-    md_parts.append(json_str)
-    md_parts.append("```")
-
     return "\n".join(md_parts)
+
+
 
 @mcp.tool()
 async def mermaid_diagrams(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
