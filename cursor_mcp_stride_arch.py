@@ -107,6 +107,18 @@ def iter_code_files(root: Path, max_files:int=15000, max_size_kb:int=8192) -> It
             count += 1
             if count >= max_files:
                 return
+def _index_evidence(evidence: List[Evidence]) -> Dict[str, List[Evidence]]:
+    by_key: Dict[str, List[Evidence]] = {}
+    for ev in (evidence or []):
+        by_key.setdefault(ev.key, []).append(ev)
+    return by_key
+
+def _fmt_refs(items: List[Evidence], max_refs:int=3) -> str:
+    if not items:
+        return ""
+    parts = [f"`{Path(ev.file).name}:{ev.line}`" for ev in items[:max_refs]]
+    return " — ex.: " + "; ".join(parts)
+
 
 def m_escape(s: str) -> str:
     """Escapa rótulos para Mermaid (em nós com aspas)."""
@@ -485,7 +497,7 @@ def load_repo_texts(path: str, max_files:int=15000, max_size_kb:int=8192) -> Tup
 async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
     """
     Analisa um repositório local e retorna:
-    - Um RESUMO em Markdown (arquitetura, segurança, amostra de endpoints, STRIDE);
+    - Um RESUMO em Markdown (arquitetura, segurança com refs de arquivo:linha, STRIDE detalhado);
     - Em seguida, o JSON completo (formatado) com os mesmos dados.
     """
     root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
@@ -494,16 +506,16 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         t = texts.get(p)
         if t:
             endpoints.extend(extract_endpoints_for_file(p, t))
+
     arch = guess_arch(root, files, texts)
     security, stride, evidence = extract_security_and_stride(texts)
+    ev_index = _index_evidence(evidence)
 
     limits_hit = len(files) >= max_files
-    limits_note = None
-    if limits_hit:
-        limits_note = (
-            f"A análise pode ter atingido alguns limites e pode não estar completa. "
-            f"Tente aumentar 'max_files' (atual {max_files}) ou 'max_size_kb' (atual {max_size_kb})."
-        )
+    limits_note = (
+        f"A análise pode ter atingido alguns limites e pode não estar completa. "
+        f"Tente aumentar 'max_files' (atual {max_files}) ou 'max_size_kb' (atual {max_size_kb})."
+    ) if limits_hit else None
 
     analysis = RepoAnalysis(
         root=str(root),
@@ -516,14 +528,15 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         security_evidence=evidence
     )
 
+    # ---------- JSON ----------
     out = asdict(analysis)
     out["endpoints"] = [asdict(e) for e in endpoints]
     out["arch"] = asdict(arch)
     out["security"] = asdict(security)
-    out["security_evidence"] = [asdict(ev) for ev in evidence]
+    out["security_evidence"] = [asdict(ev) for ev in (evidence or [])]
     json_str = json.dumps(out, indent=2, ensure_ascii=False)
 
-    # RESUMO curto e útil
+    # ---------- RESUMO ----------
     bullets_arch = []
     if arch.is_microservices: bullets_arch.append("Arquitetura de **microserviços** detectada.")
     if arch.is_hexagonal: bullets_arch.append("Sinais de **Arquitetura Hexagonal (Ports & Adapters)**.")
@@ -534,19 +547,47 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     if arch.message_brokers: bullets_arch.append("Mensageria: " + ", ".join(arch.message_brokers))
     if arch.infra_signals: bullets_arch.append("Infra: " + ", ".join(arch.infra_signals))
 
-    bullets_sec = []
-    if security.auth_present: bullets_sec.append("Autenticação detectada.")
-    if security.csrf_present: bullets_sec.append("CSRF presente.")
-    if security.hsts_present: bullets_sec.append("HSTS presente.")
-    if security.cors_overly_permissive: bullets_sec.append("⚠️ CORS permissivo ('*').")
-    if security.debug_exposed: bullets_sec.append("⚠️ Debug possivelmente habilitado.")
-    if security.jwt_usage: bullets_sec.append("Uso de JWT detectado.")
-    if security.external_calls: bullets_sec.append("Chamadas externas: " + ", ".join(security.external_calls))
-    if security.secrets_in_code: bullets_sec.append("⚠️ Possíveis segredos em código (amostras): " + "; ".join(security.secrets_in_code))
+    # Map controles -> evidências
+    ev_map = {
+        "Autenticação detectada.":              ev_index.get("auth_present", []),
+        "CSRF presente.":                       ev_index.get("csrf_present", []),
+        "HSTS presente.":                       ev_index.get("hsts_present", []),
+        "⚠️ CORS permissivo ('*').":            ev_index.get("cors_overly_permissive", []),
+        "⚠️ Debug possivelmente habilitado.":   ev_index.get("debug_exposed", []),
+        "Uso de JWT detectado.":                ev_index.get("jwt_usage", []),
+        "⚠️ Possíveis segredos em código (amostras).": ev_index.get("secret", []),
+        "Uploads detectados.":                  ev_index.get("upload", []),
+        "Chamadas externas detectadas.":        ev_index.get("external_call", []),
+    }
 
-    s_counts = {k: len(v or []) for k, v in (stride or {}).items()}
-    stride_line = " | ".join([f"{k}:{s_counts.get(k,0)}" for k in ["S","T","R","I","D","E"]])
+    bullets_sec: List[str] = []
+    if security.auth_present: bullets_sec.append("Autenticação detectada." + _fmt_refs(ev_map["Autenticação detectada."]))
+    if security.csrf_present: bullets_sec.append("CSRF presente." + _fmt_refs(ev_map["CSRF presente."]))
+    if security.hsts_present: bullets_sec.append("HSTS presente." + _fmt_refs(ev_map["HSTS presente."]))
+    if security.cors_overly_permissive: bullets_sec.append("⚠️ CORS permissivo ('*')." + _fmt_refs(ev_map["⚠️ CORS permissivo ('*')."]))
+    if security.debug_exposed: bullets_sec.append("⚠️ Debug possivelmente habilitado." + _fmt_refs(ev_map["⚠️ Debug possivelmente habilitado."]))
+    if security.jwt_usage: bullets_sec.append("Uso de JWT detectado." + _fmt_refs(ev_map["Uso de JWT detectado."]))
+    if security.secrets_in_code: bullets_sec.append("⚠️ Possíveis segredos em código (amostras)." + _fmt_refs(ev_map["⚠️ Possíveis segredos em código (amostras)."]))
+    if ev_map["Uploads detectados."]: bullets_sec.append("Uploads detectados." + _fmt_refs(ev_map["Uploads detectados."]))
+    if ev_map["Chamadas externas detectadas."]:
+        extra = " Tipos: " + ", ".join(security.external_calls) if security.external_calls else ""
+        bullets_sec.append("Chamadas externas detectadas." + _fmt_refs(ev_map["Chamadas externas detectadas."]) + extra)
 
+    # STRIDE – contagem + refs
+    stride_sections = []
+    for k, title in [("S","Spoofing"),("T","Tampering"),("R","Repudiation"),
+                     ("I","Information Disclosure"),("D","Denial of Service"),("E","Elevation of Privilege")]:
+        items = stride.get(k) or []
+        if not items:
+            stride_sections.append(f"### {title}\n- (sem achados)")
+        else:
+            stride_sections.append(f"### {title}")
+            stride_sections.extend([f"- {msg}" for msg in items])
+            # refs por tipo
+            if ev_index.get(k.lower()):
+                stride_sections.append("  " + _fmt_refs(ev_index[k.lower()]))
+
+    # Endpoints (amostra)
     eps_lines = []
     for e in endpoints[:20]:
         fw = f" ({e.framework})" if e.framework else ""
@@ -556,144 +597,27 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     if not eps_lines:
         eps_lines.append("- (nenhum endpoint detectado)")
 
+    # ---------- Markdown final ----------
     md_parts = []
     md_parts.append(f"# Análise de Repositório – {analysis.root}")
-    if limits_hit and limits_note:
+    if limits_note:
         md_parts.append(f"> **Nota:** {limits_note}")
     md_parts.append("## Resumo Arquitetural")
     md_parts.extend([f"- {b}" for b in bullets_arch] or ["- (sem sinais fortes)"])
+
     md_parts.append("\n## Controles/Sinais de Segurança")
-    md_parts.extend([f"- {b}" for b in bullets_sec] or ["- (não encontramos controles claros)"])
+    if bullets_sec:
+        md_parts.extend([f"- {b}" for b in bullets_sec])
+    else:
+        md_parts.append("- (não encontramos controles claros)")
+
     md_parts.append("\n## Endpoints (amostra)")
     md_parts.extend(eps_lines)
-    md_parts.append("\n## STRIDE – contagem de achados")
-    md_parts.append(f"- {stride_line if stride_line else '(sem achados)'}")
-    md_summary = "\n".join(md_parts)
 
-    return md_summary + "\n\n---\n\n```json\n" + json_str + "\n```"
+    md_parts.append("\n## STRIDE – achados por categoria")
+    md_parts.extend(stride_sections)
 
-@mcp.tool()
-async def mermaid_diagrams(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
-    """Retorna Markdown com dois diagramas Mermaid (flow e sequence)."""
-    root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
-    endpoints: List[Endpoint] = []
-    for p in files:
-        t = texts.get(p)
-        if t:
-            endpoints.extend(extract_endpoints_for_file(p, t))
-    arch = guess_arch(root, files, texts)
-
-    flow = mermaid_flow(endpoints, arch)
-    seq  = mermaid_sequence(endpoints)
-
-    md = [
-        "# Diagramas da arquitetura\n",
-        "## Fluxo (graph TD)\n",
-        flow,
-        "\n## Sequência (sequenceDiagram)\n",
-        seq
-    ]
-    return "\n".join(md)
-
-@mcp.tool()
-async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
-    """Relatório completo (Markdown) com resumo arquitetural, segurança, STRIDE, diagramas Mermaid e evidências (arquivo/linha)."""
-    root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
-    endpoints: List[Endpoint] = []
-    for p in files:
-        t = texts.get(p)
-        if t:
-            endpoints.extend(extract_endpoints_for_file(p, t))
-    arch = guess_arch(root, files, texts)
-    security, stride, evidence = extract_security_and_stride(texts)
-
-    limits_hit = len(files) >= max_files
-    limits_note = None
-    if limits_hit:
-        limits_note = (
-            f"A análise pode ter atingido alguns limites e pode não estar completa. "
-            f"Tente aumentar 'max_files' (atual {max_files}) ou 'max_size_kb' (atual {max_size_kb})."
-        )
-
-    bullets = []
-    if arch.is_microservices: bullets.append("Arquitetura de **microserviços** detectada.")
-    if arch.is_hexagonal: bullets.append("Sinais de **Arquitetura Hexagonal (Ports & Adapters)**.")
-    if arch.is_clean_layered: bullets.append("Sinais de **Camadas/Clean Architecture**.")
-    if arch.is_monolith: bullets.append("Provável **monólito**.")
-    if arch.drivers: bullets.append("Frameworks: " + ", ".join(arch.drivers))
-    if arch.data_stores: bullets.append("Dados: " + ", ".join(arch.data_stores))
-    if arch.message_brokers: bullets.append("Mensageria: " + ", ".join(arch.message_brokers))
-    if arch.infra_signals: bullets.append("Infra: " + ", ".join(arch.infra_signals))
-
-    sec_bullets = []
-    if security.auth_present: sec_bullets.append("Autenticação detectada.")
-    if security.csrf_present: sec_bullets.append("CSRF presente.")
-    if security.hsts_present: sec_bullets.append("HSTS presente.")
-    if security.cors_overly_permissive: sec_bullets.append("⚠️ CORS permissivo ('*').")
-    if security.debug_exposed: sec_bullets.append("⚠️ Debug possivelmente habilitado.")
-    if security.jwt_usage: sec_bullets.append("Uso de JWT detectado.")
-    if security.external_calls and isinstance(security.external_calls, list):
-        sec_bullets.append("Chamadas externas: " + ", ".join(security.external_calls))
-    if security.secrets_in_code:
-        sec_bullets.append("⚠️ Possíveis segredos em código (amostras): " + "; ".join(security.secrets_in_code))
-
-    flow = mermaid_flow(endpoints, arch)
-    seq  = mermaid_sequence(endpoints)
-
-    md = []
-    md.append(f"# Relatório de Arquitetura e STRIDE – {root}\n")
-    if limits_hit and limits_note:
-        md.append(f"> **Nota:** {limits_note}\n")
-    md.append("## Resumo Arquitetural")
-    md.extend([f"- {b}" for b in bullets] or ["- (sem sinais fortes)"])
-    md.append("\n## Controles/Sinais de Segurança")
-    md.extend([f"- {b}" for b in sec_bullets] or ["- (não encontramos controles claros)"])
-
-    md.append("\n## Endpoints (amostra)")
-    if endpoints:
-        for e in endpoints[:60]:
-            fw = f" ({e.framework})" if e.framework else ""
-            h  = f" | handler: `{e.handler}`" if e.handler else ""
-            lang = f" | lang: {e.language}" if e.language else ""
-            md.append(f"- **{e.method} {e.path}**{fw}{lang} — `{e.file}`{h}")
-    else:
-        md.append("- (nenhum endpoint detectado)")
-
-    md.append("\n## STRIDE (achados heurísticos)")
-    for key, title in [("S","Spoofing"),("T","Tampering"),("R","Repudiation"),("I","Information Disclosure"),("D","Denial of Service"),("E","Elevation of Privilege")]:
-        items = (stride or {}).get(key) or []
-        md.append(f"### {title}")
-        if items:
-            md.extend([f"- {it}" for it in items])
-        else:
-            md.append("- Sem achados fortes.")
-
-    md.append("\n## Evidências de segurança (arquivo:linha)")
-    if evidence:
-        by_key: Dict[str, List[Evidence]] = {}
-        for ev in evidence:
-            by_key.setdefault(ev.key, []).append(ev)
-        order = [
-            "auth_present","jwt_usage","cors_overly_permissive","csrf_present",
-            "hsts_present","debug_exposed","secret","upload","external_call"
-        ]
-        for k in order:
-            items = by_key.get(k, [])
-            if not items:
-                continue
-            md.append(f"### {k}")
-            for ev in items[:80]:
-                md.append(f"- `{ev.file}:{ev.line}` — {ev.text}")
-    else:
-        md.append("- (nenhuma evidência localizada)")
-
-    md.append("\n## Diagramas")
-    md.append("### Fluxo (graph TD)")
-    md.append(flow)
-    md.append("\n### Sequência (sequenceDiagram)")
-    md.append(seq)
-
-    return "\n".join(md)
+    return "\n".join(md_parts) + "\n\n---\n\n```json\n" + json_str + "\n```"
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
