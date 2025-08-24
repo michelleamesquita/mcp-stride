@@ -651,6 +651,16 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
     # --- diagramas ---
     # Removida geração de diagramas pois não serão mais usados
 
+    # Analisa o repositório
+    repo_analysis = analyze_repo(path, max_files, max_size_kb)
+    endpoints = repo_analysis.endpoints
+    arch_guess = repo_analysis.arch_guess
+    evidence = repo_analysis.evidence
+    security = repo_analysis.security
+    frameworks = repo_analysis.frameworks
+    infra = repo_analysis.infra
+    databases = repo_analysis.databases
+
     # Gera o resumo em markdown
     md = []
     
