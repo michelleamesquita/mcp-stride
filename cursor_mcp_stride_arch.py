@@ -103,6 +103,18 @@ def iter_code_files(root: Path, max_files:int=15000, max_size_kb:int=8192) -> It
             if count >= max_files:
                 return
 
+# Escape seguro para strings usadas em Mermaid (labels)
+def m_escape(s: str) -> str:
+    if s is None:
+        return ""
+    return (
+        s.replace("\\", "\\\\")
+         .replace("<", "&lt;")
+         .replace(">", "&gt;")
+         .replace('"', '\\"')
+         .replace("|", "\\|")
+    )
+
 # --------------------------- DETECTORES DE ROTAS ----------------------------------
 
 FASTAPI_DECOR = re.compile(r"@(?:app|router)\.(get|post|put|delete|patch|options|head)\(\s*['\"]([^'\"]+)", re.I)
@@ -390,30 +402,29 @@ def _fmt_refs(items: List[Evidence], max_refs:int=3) -> str:
 
 def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
     """
-    Usa 'graph TD' (compatível), sem 'note over'. Cria nó 'N0' e liga ao GW
-    com linha pontilhada. Evita problemas com acentos no subgraph.
+    Usa 'graph TD'; sem 'note over'. Cria nó de nota 'N0' e liga ao 'GW' com linha pontilhada.
+    Evita acentos no título do subgraph para compatibilidade.
     """
     lines = []
     lines.append("```mermaid")
     lines.append("graph TD")
     lines.append("classDef note fill:#fff,stroke:#999,color:#333;")
-    lines.append('    U["Usuario/Cliente"] -->|HTTP| GW["Router/API Gateway"]')
-    lines.append('    DB[(Repositorio/DB)]')
+    lines.append('    U[Usuário/Cliente] -->|HTTP| GW[Router/API Gateway]')
     lines.append('    subgraph App["Aplicacao / Servicos"]')
     if endpoints:
-        for i, e in enumerate(endpoints[:60], start=1):
+        for i, e in enumerate(endpoints[:60], start=1):  # limite para renderização
             endpoint_text = f"{e.method} {m_escape(e.path)}"
             details = []
-            if e.framework: details.append(f"({e.framework})")
+            if e.framework: details.append(f"({m_escape(e.framework)})")
             if e.handler:   details.append(f"handler: {m_escape(e.handler)}")
             if e.language:  details.append(f"lang: {m_escape(e.language)}")
             det = "<br/>" + "<br/>".join(details) if details else ""
             lines.append(f'        GW --> E{i}["{endpoint_text}"]')
             lines.append(f'        E{i} --> H{i}["Handler{det}"]')
             lines.append(f'        H{i} --> S{i}["Servico"]')
-            lines.append(f'        S{i} --> DB')
+            lines.append(f'        S{i} --> D{i}["Repositorio/DB"]')
     else:
-        lines.append('        GW --> E0["Sem rotas detectadas"]')
+        lines.append("        GW --> E0[Sem rotas detectadas]")
     lines.append("    end")
 
     notes = []
@@ -441,8 +452,7 @@ def mermaid_sequence(endpoints: List[Endpoint]) -> str:
     lines.append("    participant D as Repositorio/DB")
     if endpoints:
         for e in endpoints[:12]:  # limite p/ legibilidade
-            safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace('"', '\\"')
-            lbl = f"{e.method} {safe_path}"
+            lbl = f"{e.method} {m_escape(e.path)}"
             lines.append(f"    C->>R: {lbl}")
             lines.append("    R->>H: delega")
             lines.append("    H->>S: regra de negocio")
@@ -590,7 +600,6 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
 
     # STRIDE – Tabela (sem contagem)
     md_parts.append("\n## STRIDE – Tabela de vulnerabilidades")
-    # Monta a tabela com cada categoria e seus achados (linhas)
     md_parts.append("| Categoria | Vulnerabilidade |")
     md_parts.append("|-----------|------------------|")
     label = {
