@@ -652,14 +652,19 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
     # Removida geração de diagramas pois não serão mais usados
 
     # Analisa o repositório
-    repo_analysis = analyze_repo(path, max_files, max_size_kb)
-    endpoints = repo_analysis.endpoints
-    arch_guess = repo_analysis.arch_guess
-    evidence = repo_analysis.evidence
-    security = repo_analysis.security
-    frameworks = repo_analysis.frameworks
-    infra = repo_analysis.infra
-    databases = repo_analysis.databases
+    root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
+    endpoints: List[Endpoint] = []
+    for p in files:
+        t = texts.get(p)
+        if t:
+            endpoints.extend(extract_endpoints_for_file(p, t))
+    arch_guess = guess_arch(root, files, texts)
+    security, stride, evidence = extract_security_and_stride(texts)
+
+    # Extrai frameworks, infra e databases do arch_guess
+    frameworks = arch_guess.drivers
+    infra = arch_guess.infra_signals
+    databases = arch_guess.data_stores
 
     # Gera o resumo em markdown
     md = []
@@ -670,7 +675,15 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
     # Arquitetura
     md.append("## Arquitetura")
     md.append("- Framework: " + (", ".join(frameworks) if frameworks else "não detectado"))
-    md.append("- Arquitetura: " + arch_guess.name)
+    # Determina o tipo de arquitetura
+    arch_type = []
+    if arch_guess.is_microservices: arch_type.append("Microservicos")
+    if arch_guess.is_hexagonal: arch_type.append("Hexagonal")
+    if arch_guess.is_clean_layered: arch_type.append("Clean/Layered")
+    if arch_guess.is_monolith: arch_type.append("Monolito")
+    arch_name = ", ".join(arch_type) if arch_type else "Não detectada"
+    
+    md.append("- Arquitetura: " + arch_name)
     if arch_guess.confidence:
         md.append("  - " + arch_guess.confidence)
     if arch_guess.details:
@@ -720,7 +733,15 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
         md.append(f'        S{i} --> DB')
 
     md.append("    end")
-    md.append(f'    N0["{arch_guess.name}<br/>Infra: {", ".join(infra) if infra else "não detectado"}<br/>Dados: {", ".join(databases) if databases else "não detectado"}"]:::note')
+    # Determina o tipo de arquitetura para o diagrama
+    arch_type = []
+    if arch_guess.is_microservices: arch_type.append("Microservicos")
+    if arch_guess.is_hexagonal: arch_type.append("Hexagonal")
+    if arch_guess.is_clean_layered: arch_type.append("Clean/Layered")
+    if arch_guess.is_monolith: arch_type.append("Monolito")
+    arch_name = ", ".join(arch_type) if arch_type else "Não detectada"
+    
+    md.append(f'    N0["{arch_name}<br/>Infra: {", ".join(infra) if infra else "não detectado"}<br/>Dados: {", ".join(databases) if databases else "não detectado"}"]:::note')
     md.append("    GW -.-> N0")
     md.append("```\n")
 
