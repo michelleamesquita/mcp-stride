@@ -3,8 +3,8 @@
 # extrai rotas/handlers (Python, JS/TS, Java, Go e NestJS), identifica pontos
 # de segurança e gera diagramas Mermaid (Markdown).
 #
-# Requisitos: Python 3.10+, pip install -r requirements.txt
-# (dep única de runtime: mcp.server.fastmcp)
+# Requisitos: Python 3.10+
+# pip install mcp[server]
 
 from __future__ import annotations
 import re, json, ast, logging
@@ -19,7 +19,7 @@ log = logging.getLogger("mcp-arch-sketcher")
 
 mcp = FastMCP("stride-arch-sketcher")
 
-# ----------------------------- Modelos --------------------------------------------
+# --------------------------------- MODELOS ----------------------------------------
 
 @dataclass
 class Endpoint:
@@ -56,7 +56,7 @@ class ArchGuess:
 
 @dataclass
 class Evidence:
-    key: str           # ex.: "auth_present", "cors_overly_permissive", "csrf_present", "hsts_present", "debug_exposed", "jwt_usage", "secret", "upload", "external_call"
+    key: str           # "auth_present","cors_overly_permissive","csrf_present","hsts_present","debug_exposed","jwt_usage","secret","upload","external_call"
     file: str
     line: int
     text: str
@@ -72,16 +72,11 @@ class RepoAnalysis:
     limits_note: Optional[str] = None
     security_evidence: List[Evidence] = None
 
-# ----------------------------- Utilitários -----------------------------------------
+# ------------------------------- UTILITÁRIOS --------------------------------------
 
 FILE_SKIP_PAT = re.compile(r"\.(min|lock|svg|png|jpg|jpeg|gif|pdf|ico|wasm|class|jar|zip|tar|gz|7z)$", re.I)
 
 def iter_code_files(root: Path, max_files:int=15000, max_size_kb:int=8192) -> Iterable[Path]:
-    """
-    Itera por arquivos de código, ignorando binários grandes.
-    max_files: número máximo de arquivos (padrão 15000)
-    max_size_kb: tamanho máximo por arquivo (padrão 8192 KB = 8 MB)
-    """
     count = 0
     for p in root.rglob("*"):
         if not p.is_file():
@@ -107,42 +102,22 @@ def iter_code_files(root: Path, max_files:int=15000, max_size_kb:int=8192) -> It
             count += 1
             if count >= max_files:
                 return
-def _index_evidence(evidence: List[Evidence]) -> Dict[str, List[Evidence]]:
-    by_key: Dict[str, List[Evidence]] = {}
-    for ev in (evidence or []):
-        by_key.setdefault(ev.key, []).append(ev)
-    return by_key
 
-def _fmt_refs(items: List[Evidence], max_refs:int=3) -> str:
-    if not items:
-        return ""
-    parts = [f"`{Path(ev.file).name}:{ev.line}`" for ev in items[:max_refs]]
-    return " — ex.: " + "; ".join(parts)
+# --------------------------- DETECTORES DE ROTAS ----------------------------------
 
-
-def m_escape(s: str) -> str:
-    """Escapa rótulos para Mermaid (em nós com aspas)."""
-    return (s or "").replace('"', '\\"').replace("`", "\\`").replace("<", "&lt;").replace(">", "&gt;").replace("\n", " ")
-
-# ----------------------------- Detectores de rotas ---------------------------------
-# Python
 FASTAPI_DECOR = re.compile(r"@(?:app|router)\.(get|post|put|delete|patch|options|head)\(\s*['\"]([^'\"]+)", re.I)
 FLASK_ROUTE_DECOR = re.compile(r"@(?:app|bp|blueprint|api)\.route\(\s*['\"]([^'\"]+)['\"][^)]*\)", re.I)
 DJANGO_URLS = re.compile(r"\bpath\(\s*['\"]([^'\"]+)['\"]", re.I)
 
-# JS/TS (Express)
 EXPRESS_ROUTE = re.compile(r"\b(?:app|router)\.(get|post|put|delete|patch|options|head)\(\s*['\"]([^'\"]+)", re.I)
 
-# Java (Spring)
 SPRING_MAPPING = re.compile(r"@(?:RequestMapping|GetMapping|PostMapping|PutMapping|DeleteMapping|PatchMapping)\s*(?:\(\s*value\s*=\s*)?['\"]([^'\"]+)['\"]", re.I)
 
-# Go (Gin, Echo, Chi, net/http)
 GO_GIN = re.compile(r"\b(?:r|router|group)\.(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\(\s*\"([^\"]+)\"", re.I)
 GO_ECHO = re.compile(r"\be\.(GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\(\s*\"([^\"]+)\"", re.I)
 GO_CHI = re.compile(r"\br\.(Get|Post|Put|Delete|Patch|Options|Head)\(\s*\"([^\"]+)\"", re.I)
 GO_NETHTTP = re.compile(r"\bhttp\.HandleFunc\(\s*\"([^\"]+)\"", re.I)
 
-# NestJS (decorators)
 NEST_CONTROLLER = re.compile(r"@Controller\(\s*['\"]?([^'\"\)]*)['\"]?\s*\)", re.I)
 NEST_METHOD = re.compile(r"@(Get|Post|Put|Delete|Patch|Options|Head)\(\s*['\"]?([^'\"\)]*)['\"]?\s*\)", re.I)
 
@@ -226,9 +201,9 @@ def extract_endpoints_for_file(p: Path, text: str) -> List[Endpoint]:
         logging.warning("extract_endpoints_for_file error %s: %s", p, ex)
         return []
 
-# -------------------------- Heurísticas de arquitetura -----------------------------
+# -------------------------- HEURÍSTICAS DE ARQUITETURA -----------------------------
 
-HEXAGONAL_HINTS = {"domain", "usecase", "use_case", "ports", "port", "adapters", "adapter", }
+HEXAGONAL_HINTS = {"domain", "application", "app", "usecase", "use_case", "ports", "port", "adapters", "adapter", "infrastructure", "infra"}
 LAYERED_HINTS = {"controllers", "controller", "services", "service", "repositories", "repository"}
 DB_HINTS = {"postgres", "mysql", "mariadb", "sqlite", "redis", "mongodb", "dynamodb"}
 BROKER_HINTS = {"kafka", "rabbitmq", "sqs", "sns"}
@@ -290,7 +265,7 @@ def guess_arch(root: Path, files: List[Path], texts: Dict[Path,str]) -> ArchGues
         infra_signals=infra
     )
 
-# --------------------- Sinais de segurança + STRIDE (com evidências) ---------------
+# --------------------- SINAIS DE SEGURANÇA + STRIDE (EVIDÊNCIAS) -------------------
 
 SECRET_PAT = re.compile(r"(?i)(api[_-]?key|secret|token|passwd|password)\s*[:=]\s*['\"][^'\"\n]{8,}['\"]")
 CORS_STAR = re.compile(r"(Access-Control-Allow-Origin|\bcors\().*[\*]", re.I)
@@ -307,41 +282,31 @@ def extract_security_and_stride(texts: Dict[Path,str]) -> Tuple[SecuritySignals,
 
     bigtxt = "\n".join(texts.values())
 
-    # --- varredura por arquivo/linha para evidências ---
     for p, t in texts.items():
         for idx, line in enumerate(t.splitlines()):
             l = line
-            # auth / jwt
             if re.search(r"fastapi\.security|oauth2|flask_jwt|@PreAuthorize|spring-security|django\.contrib\.auth|Authorization", l):
                 add_ev("auth_present", p, idx, l)
             if re.search(r"\bjwt\b", l, re.I):
                 add_ev("jwt_usage", p, idx, l)
-            # CORS *
             if CORS_STAR.search(l):
                 add_ev("cors_overly_permissive", p, idx, l)
-            # CSRF
             if re.search(r"CSRFProtect\(|csrf_exempt|django\.middleware\.csrf|DoubleSubmit", l):
                 add_ev("csrf_present", p, idx, l)
-            # HSTS
             if "Strict-Transport-Security" in l:
                 add_ev("hsts_present", p, idx, l)
-            # debug
             if re.search(r"DEBUG\s*=\s*True|app\.debug\s*=\s*True|spring\.profiles\.active\s*=\s*dev", l):
                 add_ev("debug_exposed", p, idx, l)
-            # secrets
             if SECRET_PAT.search(l):
                 add_ev("secret", p, idx, l)
-            # upload/multipart
             if re.search(r"multipart|content-type.*multipart|upload", l, re.I):
                 add_ev("upload", p, idx, l)
-            # external calls
             if re.search(r"\brequests\.(get|post|put|delete)\(", l): add_ev("external_call", p, idx, l)
             if re.search(r"\bhttpx\.(get|post|put|delete)\(", l): add_ev("external_call", p, idx, l)
             if re.search(r"\baxios\.(get|post|put|delete)\(", l): add_ev("external_call", p, idx, l)
             if re.search(r"\bfetch\(", l): add_ev("external_call", p, idx, l)
             if re.search(r"\bhttp\.Get\(", l): add_ev("external_call", p, idx, l)
 
-    # --- flags agregadas (como antes) ---
     auth_present = any(ev.key == "auth_present" for ev in evidence)
     jwt_usage = any(ev.key == "jwt_usage" for ev in evidence)
     cors_overly = any(ev.key == "cors_overly_permissive" for ev in evidence)
@@ -359,7 +324,7 @@ def extract_security_and_stride(texts: Dict[Path,str]) -> Tuple[SecuritySignals,
     if re.search(r"\bfetch\(", bigtxt): external_calls.append("js:fetch")
     if re.search(r"\bhttp\.Get\(", bigtxt): external_calls.append("go:http")
 
-    # STRIDE heurístico
+    # STRIDE heurístico (mensagens)
     if not auth_present: S.append("Ausência de autenticação/guardas visíveis.")
     if jwt_usage and re.search(r"jwt\.(decode|verify)\(.*verify=False", bigtxt, re.I):
         S.append("JWT sendo decodificado sem verificação adequada.")
@@ -407,34 +372,45 @@ def extract_security_and_stride(texts: Dict[Path,str]) -> Tuple[SecuritySignals,
     stride = {"S":S, "T":T, "R":R, "I":I, "D":D, "E":E}
     return security, stride, evidence
 
-# -------------------------------- Mermaid (Markdown) -------------------------------
+# ------------------------- HELPERS PARA RESUMO/REFS --------------------------------
+
+def _index_evidence(evidence: List[Evidence]) -> Dict[str, List[Evidence]]:
+    by_key: Dict[str, List[Evidence]] = {}
+    for ev in (evidence or []):
+        by_key.setdefault(ev.key, []).append(ev)
+    return by_key
+
+def _fmt_refs(items: List[Evidence], max_refs:int=3) -> str:
+    if not items:
+        return ""
+    parts = [f"`{Path(ev.file).name}:{ev.line}`" for ev in items[:max_refs]]
+    return " — ex.: " + "; ".join(parts)
+
+# ----------------------------- DIAGRAMAS MERMAID -----------------------------------
 
 def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
     """
-    Usa 'graph TD' (compatível), sem 'note over'. Cria nó 'N0' e liga ao GW
-    com linha pontilhada. Evita problemas com acentos no subgraph.
+    Usa 'graph TD'; sem 'note over'. Cria nó de nota 'N0' e liga ao 'GW' com linha pontilhada.
+    Evita acentos no título do subgraph para compatibilidade.
     """
     lines = []
     lines.append("```mermaid")
     lines.append("graph TD")
     lines.append("classDef note fill:#fff,stroke:#999,color:#333;")
-    lines.append('    U["Usuario/Cliente"] -->|HTTP| GW["Router/API Gateway"]')
-    lines.append('    DB[(Repositorio/DB)]')
+    lines.append('    U[Usuário/Cliente] -->|HTTP| GW[Router/API Gateway]')
     lines.append('    subgraph App["Aplicacao / Servicos"]')
     if endpoints:
-        for i, e in enumerate(endpoints[:60], start=1):
-            endpoint_text = f"{e.method} {m_escape(e.path)}"
-            details = []
-            if e.framework: details.append(f"({e.framework})")
-            if e.handler:   details.append(f"handler: {m_escape(e.handler)}")
-            if e.language:  details.append(f"lang: {m_escape(e.language)}")
-            det = "<br/>" + "<br/>".join(details) if details else ""
-            lines.append(f'        GW --> E{i}["{endpoint_text}"]')
-            lines.append(f'        E{i} --> H{i}["Handler{det}"]')
-            lines.append(f'        H{i} --> S{i}["Servico"]')
-            lines.append(f'        S{i} --> DB')
+        for i, e in enumerate(endpoints[:60], start=1):  # limite para renderização
+            safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace('"', '\\"')
+            fw = f" ({e.framework})" if e.framework else ""
+            h  = f"\\nhandler: {e.handler}" if e.handler else ""
+            lang = f"\\nlang: {e.language}" if e.language else ""
+            lines.append(f'        GW --> E{i}["{e.method} {safe_path}"]')
+            lines.append(f"        E{i} --> H{i}[Handler{fw}{h}{lang}]")
+            lines.append(f"        H{i} --> S{i}[Servico]")
+            lines.append(f"        S{i} --> D{i}[Repositorio/DB]")
     else:
-        lines.append('        GW --> E0["Sem rotas detectadas"]')
+        lines.append("        GW --> E0[Sem rotas detectadas]")
     lines.append("    end")
 
     notes = []
@@ -452,9 +428,6 @@ def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
     return "\n".join(lines)
 
 def mermaid_sequence(endpoints: List[Endpoint]) -> str:
-    """
-    sequenceDiagram simplificado e compatível.
-    """
     lines = []
     lines.append("```mermaid")
     lines.append("sequenceDiagram")
@@ -464,21 +437,33 @@ def mermaid_sequence(endpoints: List[Endpoint]) -> str:
     lines.append("    participant S as Servico")
     lines.append("    participant D as Repositorio/DB")
     if endpoints:
-        for e in endpoints[:12]:
-            req_text = f"{e.method} {m_escape(e.path)}"
-            lines.append(f"    C->>+R: {req_text}")
-            lines.append("    R->>+H: delega")
-            lines.append("    H->>+S: regra de negocio")
-            lines.append("    S->>+D: consulta/grava")
-            lines.append("    D-->>-S: resultado")
-            lines.append("    S-->>-H: resposta")
-            lines.append("    H-->>-R: processa")
-            lines.append("    R-->>-C: HTTP 200/4xx/5xx")
+        for e in endpoints[:12]:  # limite p/ legibilidade
+            safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace('"', '\\"')
+            lbl = f"{e.method} {safe_path}"
+            lines.append(f"    C->>R: {lbl}")
+            lines.append("    R->>H: delega")
+            lines.append("    H->>S: regra de negocio")
+            lines.append("    S->>D: consulta/grava")
+            lines.append("    D-->>S: resultado")
+            lines.append("    S-->>H: resposta")
+            lines.append("    H-->>C: HTTP 200/4xx/5xx")
     else:
-        lines.append("    C->>+R: (sem rotas detectadas)")
-        lines.append("    R-->>-C: 204 No Content")
+        lines.append("    C->>R: (sem rotas detectadas)")
+        lines.append("    R-->>C: 204 No Content")
     lines.append("```")
     return "\n".join(lines)
+
+def _generate_diagrams_md(endpoints: List[Endpoint], arch: ArchGuess) -> str:
+    flow = mermaid_flow(endpoints, arch)
+    seq  = mermaid_sequence(endpoints)
+    md = [
+        "## Diagramas",
+        "### Fluxo (graph TD)",
+        flow,
+        "### Sequência (sequenceDiagram)",
+        seq
+    ]
+    return "\n".join(md)
 
 # --------------------------------- MCP TOOLS ---------------------------------------
 
@@ -497,7 +482,7 @@ def load_repo_texts(path: str, max_files:int=15000, max_size_kb:int=8192) -> Tup
 async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
     """
     Analisa um repositório local e retorna:
-    - Um RESUMO em Markdown (arquitetura, segurança com refs de arquivo:linha, TODOS os endpoints, STRIDE detalhado);
+    - Um RESUMO em Markdown (arquitetura, segurança com refs de arquivo:linha, TODOS os endpoints, STRIDE em tabela, diagramas);
     - Em seguida, o JSON completo (formatado) com os mesmos dados.
     """
     root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
@@ -547,7 +532,7 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     if arch.message_brokers: bullets_arch.append("Mensageria: " + ", ".join(arch.message_brokers))
     if arch.infra_signals: bullets_arch.append("Infra: " + ", ".join(arch.infra_signals))
 
-    # Map controles -> evidências
+    # Map controles -> evidências (arquivo:linha)
     ev_map = {
         "Autenticação detectada.":              ev_index.get("auth_present", []),
         "CSRF presente.":                       ev_index.get("csrf_present", []),
@@ -573,10 +558,6 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
         extra = " Tipos: " + ", ".join(security.external_calls) if security.external_calls else ""
         bullets_sec.append("Chamadas externas detectadas." + _fmt_refs(ev_map["Chamadas externas detectadas."]) + extra)
 
-    # STRIDE – contagem
-    s_counts = {k: len(v or []) for k, v in (stride or {}).items()}
-    stride_line = " | ".join([f"{k}:{s_counts.get(k,0)}" for k in ["S","T","R","I","D","E"]])
-
     # ---------- Markdown final ----------
     md_parts = []
     md_parts.append(f"# Análise de Repositório – {analysis.root}")
@@ -591,7 +572,7 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     else:
         md_parts.append("- (não encontramos controles claros)")
 
-    # Endpoints — agora TODOS (sem amostra)
+    # Endpoints — TODOS
     md_parts.append("\n## Endpoints (todos)")
     if endpoints:
         md_parts.append("| Método | Path | Framework | Handler | Linguagem | Arquivo |")
@@ -604,13 +585,59 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     else:
         md_parts.append("- (nenhum endpoint detectado)")
 
-    # STRIDE — contagem e observação
-    md_parts.append("\n## STRIDE – contagem de achados")
-    md_parts.append(f"- {stride_line if stride_line else '(sem achados)'}")
+    # STRIDE – Tabela (sem contagem)
+    md_parts.append("\n## STRIDE – Tabela de vulnerabilidades")
+    # Monta a tabela com cada categoria e seus achados (linhas)
+    md_parts.append("| Categoria | Vulnerabilidade |")
+    md_parts.append("|-----------|------------------|")
+    label = {
+        "S": "Spoofing",
+        "T": "Tampering",
+        "R": "Repudiation",
+        "I": "Information Disclosure",
+        "D": "Denial of Service",
+        "E": "Elevation of Privilege",
+    }
+    for k in ["S","T","R","I","D","E"]:
+        items = (stride.get(k) or [])
+        if not items:
+            md_parts.append(f"| {label[k]} | (sem achados) |")
+        else:
+            for msg in items:
+                safe = msg.replace("|","\\|")
+                md_parts.append(f"| {label[k]} | {safe} |")
 
-    md_summary = "\n".join(md_parts)
-    return md_summary + "\n\n---\n\n```json\n" + json_str + "\n```"
+    # Diagramas
+    md_parts.append("")
+    md_parts.append(_generate_diagrams_md(endpoints, arch))
 
+    # JSON completo
+    md_parts.append("\n---\n")
+    md_parts.append("```json")
+    md_parts.append(json_str)
+    md_parts.append("```")
+
+    return "\n".join(md_parts)
+
+@mcp.tool()
+async def mermaid_diagrams(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
+    """Retorna apenas os dois diagramas Mermaid (flow e sequence), em Markdown."""
+    root, files, texts = load_repo_texts(path, max_files=max_files, max_size_kb=max_size_kb)
+    endpoints: List[Endpoint] = []
+    for p in files:
+        t = texts.get(p)
+        if t:
+            endpoints.extend(extract_endpoints_for_file(p, t))
+    arch = guess_arch(root, files, texts)
+    return _generate_diagrams_md(endpoints, arch)
+
+@mcp.tool()
+async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192) -> str:
+    """
+    Relatório completo (Markdown) com resumo arquitetural, segurança, endpoints, STRIDE em tabela, diagramas e evidências em JSON.
+    (Sem seção de contagem STRIDE.)
+    """
+    return await analyze_repo(path=path, max_files=max_files, max_size_kb=max_size_kb)
 
 if __name__ == "__main__":
     mcp.run(transport="stdio")
