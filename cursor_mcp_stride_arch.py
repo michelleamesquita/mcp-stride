@@ -664,14 +664,45 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
 
     # ---------- RESUMO ----------
     bullets_arch = []
-    if arch.is_microservices: bullets_arch.append("Arquitetura de **microserviços** detectada.")
-    if arch.is_hexagonal: bullets_arch.append("Sinais de **Arquitetura Hexagonal (Ports & Adapters)**.")
-    if arch.is_clean_layered: bullets_arch.append("Sinais de **Camadas/Clean Architecture**.")
-    if arch.is_monolith: bullets_arch.append("Provável **monólito**.")
-    if arch.drivers: bullets_arch.append("Frameworks: " + ", ".join(arch.drivers))
-    if arch.data_stores: bullets_arch.append("Dados: " + ", ".join(arch.data_stores))
-    if arch.message_brokers: bullets_arch.append("Mensageria: " + ", ".join(arch.message_brokers))
-    if arch.infra_signals: bullets_arch.append("Infra: " + ", ".join(arch.infra_signals))
+    
+    # Arquitetura
+    if arch.is_microservices: bullets_arch.append("🏗️ Arquitetura de **microserviços** detectada")
+    if arch.is_hexagonal: bullets_arch.append("🏗️ Sinais de **Arquitetura Hexagonal (Ports & Adapters)**")
+    if arch.is_clean_layered: bullets_arch.append("🏗️ Sinais de **Camadas/Clean Architecture**")
+    if arch.is_monolith: bullets_arch.append("🏗️ Provável **monólito**")
+    
+    # Frameworks e Tecnologias
+    if arch.drivers: bullets_arch.append("⚙️ Frameworks: " + ", ".join(arch.drivers))
+    
+    # Dados e Mensageria
+    if arch.data_stores: bullets_arch.append("💾 Bancos de dados: " + ", ".join(arch.data_stores))
+    if arch.message_brokers: bullets_arch.append("📨 Mensageria: " + ", ".join(arch.message_brokers))
+    
+    # Infraestrutura
+    if arch.infra_signals: bullets_arch.append("🚀 Infraestrutura: " + ", ".join(arch.infra_signals))
+    
+    # Endpoints e Rotas
+    total_endpoints = len(endpoints)
+    frameworks_count = {}
+    methods_count = {}
+    handlers_count = 0
+    for e in endpoints:
+        if e.framework:
+            frameworks_count[e.framework] = frameworks_count.get(e.framework, 0) + 1
+        methods_count[e.method] = methods_count.get(e.method, 0) + 1
+        if e.handler:
+            handlers_count += 1
+    
+    if total_endpoints > 0:
+        bullets_arch.append(f"\n**{total_endpoints} endpoints** detectados:")
+        # Contagem por framework
+        for fw, count in frameworks_count.items():
+            bullets_arch.append(f"  - {count} rotas em {fw}")
+        # Contagem por método HTTP
+        methods_summary = [f"{count} {method}" for method, count in methods_count.items()]
+        bullets_arch.append(f"  - Métodos HTTP: {', '.join(methods_summary)}")
+        # Handlers
+        bullets_arch.append(f"  - {handlers_count} handlers implementados")
 
     # Map controles -> evidências (arquivo:linha)
     ev_map = {
@@ -708,6 +739,29 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     # Resumo arquitetural
     md_parts.append("## Resumo Arquitetural")
     md_parts.extend([f"- {b}" for b in bullets_arch] or ["- (sem sinais fortes)"])
+
+    # Lista completa de endpoints
+    if endpoints:
+        md_parts.append("\n## Endpoints Detectados")
+        
+        # Agrupar por framework
+        by_framework = {}
+        for e in endpoints:
+            fw = e.framework or "outros"
+            by_framework.setdefault(fw, []).append(e)
+        
+        # Listar por framework
+        for fw, eps in sorted(by_framework.items()):
+            md_parts.append(f"\n### {fw.title()}")
+            md_parts.append("| Método | Path | Handler | Arquivo:linha |")
+            md_parts.append("|--------|------|---------|---------------|")
+            for e in sorted(eps, key=lambda x: (x.path, x.method)):
+                # Criar link clicável para o arquivo
+                file_path = str(Path(e.file).resolve()).replace("\\", "/")
+                file_name = Path(e.file).name
+                handler = e.handler if e.handler else "-"
+                line = 1  # TODO: melhorar para pegar linha exata
+                md_parts.append(f"| {e.method} | `{e.path}` | `{handler}` | [{file_name}:{line}]({file_path}#{line}) |")
 
     # === SEGURANÇA (Controles + Vulnerabilidades) ===
     md_parts.append("\n## Segurança")
