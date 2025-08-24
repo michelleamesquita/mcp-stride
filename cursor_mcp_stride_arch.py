@@ -390,27 +390,30 @@ def _fmt_refs(items: List[Evidence], max_refs:int=3) -> str:
 
 def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
     """
-    Usa 'graph TD'; sem 'note over'. Cria nó de nota 'N0' e liga ao 'GW' com linha pontilhada.
-    Evita acentos no título do subgraph para compatibilidade.
+    Usa 'graph TD' (compatível), sem 'note over'. Cria nó 'N0' e liga ao GW
+    com linha pontilhada. Evita problemas com acentos no subgraph.
     """
     lines = []
     lines.append("```mermaid")
     lines.append("graph TD")
     lines.append("classDef note fill:#fff,stroke:#999,color:#333;")
-    lines.append('    U[Usuário/Cliente] -->|HTTP| GW[Router/API Gateway]')
+    lines.append('    U["Usuario/Cliente"] -->|HTTP| GW["Router/API Gateway"]')
+    lines.append('    DB[(Repositorio/DB)]')
     lines.append('    subgraph App["Aplicacao / Servicos"]')
     if endpoints:
-        for i, e in enumerate(endpoints[:60], start=1):  # limite para renderização
-            safe_path = e.path.replace("<", "&lt;").replace(">", "&gt;").replace('"', '\\"')
-            fw = f" ({e.framework})" if e.framework else ""
-            h  = f"\\nhandler: {e.handler}" if e.handler else ""
-            lang = f"\\nlang: {e.language}" if e.language else ""
-            lines.append(f'        GW --> E{i}["{e.method} {safe_path}"]')
-            lines.append(f"        E{i} --> H{i}[Handler{fw}{h}{lang}]")
-            lines.append(f"        H{i} --> S{i}[Servico]")
-            lines.append(f"        S{i} --> D{i}[Repositorio/DB]")
+        for i, e in enumerate(endpoints[:60], start=1):
+            endpoint_text = f"{e.method} {m_escape(e.path)}"
+            details = []
+            if e.framework: details.append(f"({e.framework})")
+            if e.handler:   details.append(f"handler: {m_escape(e.handler)}")
+            if e.language:  details.append(f"lang: {m_escape(e.language)}")
+            det = "<br/>" + "<br/>".join(details) if details else ""
+            lines.append(f'        GW --> E{i}["{endpoint_text}"]')
+            lines.append(f'        E{i} --> H{i}["Handler{det}"]')
+            lines.append(f'        H{i} --> S{i}["Servico"]')
+            lines.append(f'        S{i} --> DB')
     else:
-        lines.append("        GW --> E0[Sem rotas detectadas]")
+        lines.append('        GW --> E0["Sem rotas detectadas"]')
     lines.append("    end")
 
     notes = []
