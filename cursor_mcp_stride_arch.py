@@ -684,11 +684,6 @@ async def full_report(path: str = ".", max_files:int=15000, max_size_kb:int=8192
     arch_name = ", ".join(arch_type) if arch_type else "Não detectada"
     
     md.append("- Arquitetura: " + arch_name)
-    if arch_guess.confidence:
-        md.append("  - " + arch_guess.confidence)
-    if arch_guess.details:
-        for d in arch_guess.details:
-            md.append("  - " + d)
     md.append("")
 
     # Endpoints em tabela
