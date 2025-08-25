@@ -528,15 +528,18 @@ def _fmt_refs(items: List[Evidence], max_refs:int=3) -> str:
 
 # ----------------------------- DIAGRAMAS MERMAID -----------------------------------
 
-def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
+def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess, stride: Dict[str,List[str]]=None, evidence: List[Evidence]=None) -> str:
     """
-    Usa 'graph TD'; sem 'note over'. Cria nó de nota 'N0' e liga ao 'GW' com linha pontilhada.
-    Evita acentos no título do subgraph para compatibilidade.
+    Gera diagrama de fluxo Mermaid com:
+    - Estrutura base da aplicação (Usuario -> Gateway -> Handler -> Servico -> DB)
+    - Notas sobre arquitetura detectada
+    - Vulnerabilidades STRIDE destacadas em vermelho onde impactam a arquitetura
     """
     lines = []
     lines.append("```mermaid")
     lines.append("graph TD")
     lines.append("classDef note fill:#fff,stroke:#999,color:#333;")
+    lines.append("classDef vuln fill:#fff0f0,stroke:#c00,color:#333;")
     lines.append('    U[Usuário/Cliente] -->|HTTP| GW[Router/API Gateway]')
     lines.append('    subgraph App["Aplicacao / Servicos"]')
     if endpoints:
@@ -547,12 +550,12 @@ def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
             if e.handler:   details.append(f"handler: {m_escape(e.handler)}")
             if e.language:  details.append(f"lang: {m_escape(e.language)}")
             det = "<br/>" + "<br/>".join(details) if details else ""
-            lines.append(f'        GW --> E{i}["{endpoint_text}"]')
-            lines.append(f'        E{i} --> H{i}["Handler{det}"]')
-            lines.append(f'        H{i} --> S{i}["Servico"]')
-            lines.append(f'        S{i} --> D{i}["Repositorio/DB"]')
+            lines.append(f'        Gateway --> E{i}["{endpoint_text}"]')
+            lines.append(f'        E{i} --> Handler{i}["Handler{det}"]')
+            lines.append(f'        Handler{i} --> Servico{i}["Servico"]')
+            lines.append(f'        Servico{i} --> DB{i}["Repositorio/DB"]')
     else:
-        lines.append("        GW --> E0[Sem rotas detectadas]")
+        lines.append("        Gateway --> E0[Sem rotas detectadas]")
     lines.append("    end")
 
     notes = []
@@ -565,32 +568,81 @@ def mermaid_flow(endpoints: List[Endpoint], arch: ArchGuess) -> str:
     if notes:
         note_text = "<br/>".join(notes).replace('"', '\\"')
         lines.append(f'    N0["{note_text}"]:::note')
-        lines.append("    GW -.-> N0")
+        lines.append("    Gateway -.-> N0")
+    
+    # Adicionar nós de vulnerabilidade STRIDE se fornecidos
+    if stride and evidence:
+        # Spoofing (autenticação)
+        if any(ev.key == "no_auth" for ev in evidence):
+            lines.append('    V1[Sem autenticacao]:::vuln')
+            lines.append('    Usuario --> V1')
+            lines.append('    V1 --> Gateway')
+        
+        # Tampering (injeções)
+        sql_vuln = any(ev.key in {"sql_injection", "sql_dynamic"} for ev in evidence)
+        if sql_vuln:
+            lines.append('    V2[SQL Injection]:::vuln')
+            lines.append('    Servico --> V2')
+            lines.append('    V2 --> DB')
+        
+        cmd_vuln = any(ev.key == "command_injection" for ev in evidence)
+        if cmd_vuln:
+            lines.append('    V3[Command Injection]:::vuln')
+            lines.append('    Servico --> V3')
+        
+        # Repudiation (logs)
+        if any(ev.key in {"no_logs", "no_trace"} for ev in evidence):
+            lines.append('    V4[Sem logs/trace]:::vuln')
+            lines.append('    Handler --> V4')
+        
+        # Information Disclosure
+        if any(ev.key in {"cors_overly_permissive", "debug_exposed"} for ev in evidence):
+            lines.append('    V5[CORS * / Debug]:::vuln')
+            lines.append('    Gateway --> V5')
+        
+        if any(ev.key in {"secret", "logs_with_secrets"} for ev in evidence):
+            lines.append('    V6[Segredos expostos]:::vuln')
+            lines.append('    Servico --> V6')
+        
+        # Denial of Service
+        if any(ev.key in {"busy_loop", "regex_redos", "upload_no_size"} for ev in evidence):
+            lines.append('    V7[DoS: loops/regex/upload]:::vuln')
+            lines.append('    Handler --> V7')
+        
+        # Elevation of Privilege
+        if any(ev.key == "no_rbac" for ev in evidence):
+            lines.append('    V8[Sem RBAC]:::vuln')
+            lines.append('    Handler --> V8')
+    
     lines.append("```")
     return "\n".join(lines)
 
 def mermaid_sequence(endpoints: List[Endpoint]) -> str:
+    """
+    Gera diagrama de sequência Mermaid mostrando o fluxo de chamadas para cada endpoint:
+    Cliente -> Router -> Handler -> Servico -> DB
+    """
     lines = []
     lines.append("```mermaid")
     lines.append("sequenceDiagram")
-    lines.append("    participant C as Cliente")
-    lines.append("    participant R as Router")
-    lines.append("    participant H as Handler")
-    lines.append("    participant S as Servico")
-    lines.append("    participant D as Repositorio/DB")
+    lines.append("    participant Cliente")
+    lines.append("    participant Router")
+    lines.append("    participant Handler")
+    lines.append("    participant Servico")
+    lines.append("    participant DB as Repositorio/DB")
     if endpoints:
         for e in endpoints[:12]:  # limite p/ legibilidade
             lbl = f"{e.method} {m_escape(e.path)}"
-            lines.append(f"    C->>R: {lbl}")
-            lines.append("    R->>H: delega")
-            lines.append("    H->>S: regra de negocio")
-            lines.append("    S->>D: consulta/grava")
-            lines.append("    D-->>S: resultado")
-            lines.append("    S-->>H: resposta")
-            lines.append("    H-->>C: HTTP 200/4xx/5xx")
+            lines.append(f"    Cliente->>Router: {lbl}")
+            lines.append("    Router->>Handler: delega")
+            lines.append("    Handler->>Servico: regra de negocio")
+            lines.append("    Servico->>DB: consulta/grava")
+            lines.append("    DB-->>Servico: resultado")
+            lines.append("    Servico-->>Handler: resposta")
+            lines.append("    Handler-->>Cliente: HTTP 200/4xx/5xx")
     else:
-        lines.append("    C->>R: (sem rotas detectadas)")
-        lines.append("    R-->>C: 204 No Content")
+        lines.append("    Cliente->>Router: (sem rotas detectadas)")
+        lines.append("    Router-->>Cliente: 204 No Content")
     lines.append("```")
     return "\n".join(lines)
 
@@ -1040,7 +1092,7 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     # STRIDE – Tabela (sem contagem)
     md_parts.append("\n## STRIDE – Tabela de vulnerabilidades")
     md_parts.append("| Categoria | Vulnerabilidade |")
-    md_parts.append("|-----------|------------------|")
+    md_parts.append("|:----------|:-----------------|")
     label = {
         "S": "Spoofing",
         "T": "Tampering",
@@ -1061,6 +1113,10 @@ async def analyze_repo(path: str = ".", max_files:int=15000, max_size_kb:int=819
     # Diagramas Mermaid (mantidos)
     md_parts.append("")
     md_parts.append(_generate_diagrams_md(endpoints, arch))
+
+    # Adicionar vulnerabilidades STRIDE ao diagrama de fluxo
+    flow_with_stride = mermaid_flow(endpoints, arch, stride, evidence)
+    md_parts[-1] = md_parts[-1].replace(mermaid_flow(endpoints, arch), flow_with_stride)
 
     return "\n".join(md_parts)
 
